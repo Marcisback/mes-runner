@@ -1,0 +1,47 @@
+/**
+ * Dark theme design tokens.
+ *
+ * All colors, spacing, and typography values used across the app are defined
+ * here as CSS custom properties so the visual language stays consistent and
+ * can be re-themed from a single place.
+ */
+:root {
+  /* Surfaces */
+  --color-bg: #0f1115;
+  --color-surface: #161a21;
+  --color-surface-raised: #1c2028;
+  --color-border: #262b34;
+
+  /* Text */
+  --color-text: #e6e9ef;
+  --color-text-muted: #8b93a1;
+  --color-text-subtle: #626b7a;
+
+  /* Accent / status */
+  --color-accent: #4c8bf5;
+  --color-accent-soft: rgba(76, 139, 245, 0.14);
+  --color-status-idle: #8b93a1;
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
+  --font-size-sm: 0.8125rem;
+  --font-size-md: 0.9375rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.75rem;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Layout dimensions */
+  --header-height: 56px;
+  --footer-height: 32px;
+  --sidebar-width: 220px;
+
+  --radius-md: 8px;
+}
