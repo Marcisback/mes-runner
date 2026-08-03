@@ -1,0 +1,58 @@
+.wrapper {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform: rotate(0deg);
+}
+
+.track {
+  stroke: var(--color-surface-raised);
+}
+
+.progress {
+  transition: stroke-dashoffset 600ms ease;
+}
+
+.toneAccent {
+  stroke: var(--color-accent);
+}
+
+.toneSuccess {
+  stroke: var(--color-success);
+}
+
+.toneMuted {
+  stroke: var(--color-text-muted);
+}
+
+.center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
+/* Restrained "in progress" cue: a slow pulse on the progress arc. Disabled by
+   the global prefers-reduced-motion rule. */
+.active .progress {
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}

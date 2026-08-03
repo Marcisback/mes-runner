@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "test": "node --test electron/workflows/*.test.ts",
+    "test": "node --test electron/workflows/*.test.ts src/lib/*.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

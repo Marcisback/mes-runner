@@ -1,0 +1,56 @@
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'rail tabs'
+    'rail main'
+    'status status';
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--color-bg);
+}
+
+.rail {
+  grid-area: rail;
+  min-height: 0;
+}
+
+.tabs {
+  grid-area: tabs;
+  min-width: 0;
+}
+
+.main {
+  grid-area: main;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Bounded host for the active primary view. It does NOT scroll — each primary
+   view owns its own overflow behavior (Dashboard: none; Logs/Settings:
+   internal vertical scrolling). */
+.primaryHost {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.runnerHost {
+  height: 100%;
+  min-height: 0;
+}
+
+.hidden {
+  display: none;
+}
+
+.status {
+  grid-area: status;
+}

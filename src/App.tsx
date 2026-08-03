@@ -1,22 +1,19 @@
-import { AppLayout } from './components/layout/AppLayout'
-import { Header } from './components/layout/Header'
-import { Sidebar } from './components/layout/Sidebar'
-import { Footer } from './components/layout/Footer'
-import { ManagedChromeView } from './components/browser/ManagedChromeView'
+import { EngineProvider } from './state/EngineProvider'
+import { WorkspaceProvider } from './state/WorkspaceProvider'
+import { AppShell } from './components/shell/AppShell'
 
 /**
- * Application root. Composes the shell regions; state and views will grow from
- * here as features are added.
+ * Application root. Provides the shared engine/managed-Chrome state and the
+ * workspace/navigation model, then renders the shell. State and views grow from
+ * the providers rather than being threaded through here.
  */
 function App() {
   return (
-    <AppLayout
-      header={<Header status="Idle" />}
-      sidebar={<Sidebar />}
-      footer={<Footer message="Ready" />}
-    >
-      <ManagedChromeView />
-    </AppLayout>
+    <EngineProvider>
+      <WorkspaceProvider>
+        <AppShell />
+      </WorkspaceProvider>
+    </EngineProvider>
   )
 }
 

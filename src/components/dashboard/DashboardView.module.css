@@ -1,0 +1,65 @@
+/*
+ * Height-constrained Dashboard. The whole view fits the available application
+ * height and never scrolls: a compact header, a flexible summary-card area that
+ * absorbs remaining height, and a bounded Recent Activity preview. Spacing,
+ * ring sizes, and typography are height-aware (vh in clamp()) so everything
+ * fits from 1600x1000 down to the 900x600 minimum without a scrollbar.
+ */
+.view {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: clamp(var(--space-2), 1.6vh, var(--space-5));
+  padding: clamp(var(--space-2), 1.8vh, var(--space-5))
+    clamp(var(--space-4), 3vw, var(--space-6));
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 1440px;
+  margin: 0 auto;
+  width: 100%;
+  overflow: hidden;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: clamp(var(--space-3), 1.8vw, var(--space-5));
+  align-items: stretch;
+  min-width: 0;
+  min-height: 0;
+}
+
+.leftColumn,
+.rightColumn {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(var(--space-2), 1.6vh, var(--space-5));
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Today's Progress absorbs remaining height; Needs Review stays compact. */
+.leftColumn > :first-child {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.leftColumn > :last-child {
+  flex: 0 0 auto;
+}
+
+.rightColumn {
+  height: 100%;
+}
+
+/* Only stack into a single column well below the supported minimum window
+   width, so the approved two-column layout is preserved at every supported
+   size (and stays short enough to fit the height). */
+@media (max-width: 680px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-rows: minmax(0, auto);
+  }
+}

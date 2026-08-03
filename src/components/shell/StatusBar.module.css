@@ -1,0 +1,42 @@
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--statusbar-height);
+  padding: 0 var(--space-4);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
+  background-color: var(--color-bg);
+  border-top: 1px solid var(--color-border);
+}
+
+.left {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.ready {
+  background-color: var(--color-success);
+}
+
+.busy {
+  background-color: var(--color-success);
+  box-shadow: 0 0 0 3px var(--color-success-soft);
+}
+
+.error {
+  background-color: var(--color-danger);
+  box-shadow: none;
+}
+
+.right {
+  color: var(--color-text-subtle);
+}

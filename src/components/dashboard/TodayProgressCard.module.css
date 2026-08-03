@@ -1,0 +1,103 @@
+.card {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(var(--space-3), 2.4vw, var(--space-6));
+  min-height: 0;
+  height: 100%;
+}
+
+/* Ring is bounded by BOTH available width and height so it never overflows the
+   card at short window heights. */
+.progressRing {
+  width: clamp(110px, min(20vw, 26vh), 210px);
+  flex: none;
+}
+
+.centerCount {
+  font-size: clamp(1.1rem, min(3vw, 3.6vh), var(--font-size-xl));
+  font-weight: 800;
+  color: var(--color-text);
+}
+
+.centerLabel {
+  margin-top: var(--space-1);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.categories {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(var(--space-2), 1.8vh, var(--space-4));
+  margin: 0;
+  min-height: 0;
+}
+
+.category {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-bottom: clamp(var(--space-1), 1.4vh, var(--space-3));
+  border-bottom: 1px solid var(--color-border);
+}
+
+.category:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.categoryLabel {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.categoryValue {
+  font-size: clamp(1.15rem, min(2.4vw, 3.2vh), var(--font-size-xl));
+  font-weight: 800;
+  line-height: 1;
+}
+
+.toneSuccess {
+  color: var(--color-success);
+}
+
+.toneDanger {
+  color: var(--color-accent);
+}
+
+.toneNeutral {
+  color: var(--color-text);
+}
+
+.emptyNote {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-subtle);
+}
+
+/* Drop nonessential explanatory copy before operational values lose room. */
+@media (max-height: 780px) {
+  .emptyNote {
+    display: none;
+  }
+}
+
+@media (max-width: 680px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    text-align: center;
+  }
+}
