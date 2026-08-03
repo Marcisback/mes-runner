@@ -2,16 +2,18 @@
   "name": "mes-runner",
   "private": true,
   "version": "0.0.0",
-  "description": "Desktop automation platform with an embedded browser and browser automation.",
+  "description": "Desktop automation platform with managed Chrome browser control.",
   "author": "MES Runner",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "test": "node --test electron/workflows/*.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {
+    "playwright-core": "^1.62.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
@@ -21,13 +23,13 @@
     "@typescript-eslint/eslint-plugin": "^7.1.1",
     "@typescript-eslint/parser": "^7.1.1",
     "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^30.0.1",
+    "electron-builder": "^24.13.3",
     "eslint": "^8.57.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
     "typescript": "^5.2.2",
     "vite": "^5.1.6",
-    "electron": "^30.0.1",
-    "electron-builder": "^24.13.3",
     "vite-plugin-electron": "^0.28.6",
     "vite-plugin-electron-renderer": "^0.14.5"
   },

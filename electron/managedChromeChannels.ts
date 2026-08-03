@@ -1,0 +1,18 @@
+export const MANAGED_CHROME_IPC_CHANNELS = {
+  launch: 'managed-chrome:launch',
+  openLoginWindow: 'managed-chrome:open-login-window',
+  authenticationComplete: 'managed-chrome:authentication-complete',
+  cancelAuthentication: 'managed-chrome:cancel-authentication',
+  stop: 'managed-chrome:stop',
+  getState: 'managed-chrome:get-state',
+  setViewport: 'managed-chrome:set-viewport',
+  mouseMove: 'managed-chrome:mouse-move',
+  mouseClick: 'managed-chrome:mouse-click',
+  mouseWheel: 'managed-chrome:mouse-wheel',
+  keyDown: 'managed-chrome:key-down',
+  keyUp: 'managed-chrome:key-up',
+  insertText: 'managed-chrome:insert-text',
+  connectFramePort: 'managed-chrome:connect-frame-port',
+  framePort: 'managed-chrome:frame-port',
+  stateChanged: 'managed-chrome:state-changed',
+} as const

@@ -22,6 +22,9 @@ build
 *.exe
 *.AppImage
 
+# Local legacy reference code
+reference/legacy/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -9,14 +9,16 @@ before making changes.
 ## Project Overview
 
 MES Runner is a production-quality desktop automation platform built with
-Electron, React, and TypeScript. It will embed a browser, drive it with browser
-automation, and orchestrate long-running, recoverable workflows as explicit
-state machines — with persistent sessions, structured logging, crash recovery,
-and auto-updating.
+Electron, React, TypeScript, and Playwright browser-control APIs. It uses the
+installed organization-managed Google Chrome application as the MES browser and
+will later drive it with browser automation and orchestrate long-running,
+recoverable workflows as explicit state machines — with persistent application
+storage, structured logging, crash recovery, and auto-updating.
 
-Today the repository contains a working **application shell** only. Most of the
-platform capabilities are planned; see [Current Architecture](#current-architecture)
-for the precise boundary between what exists and what does not.
+Today the repository contains a working **application shell** and the first
+managed-Chrome browser foundation. Most automation platform capabilities are still
+planned; see [Current Architecture](#current-architecture) for the precise
+boundary between what exists and what does not.
 
 ## Project Goals
 
@@ -42,23 +44,45 @@ for the precise boundary between what exists and what does not.
 - **Electron main process** (`electron/main.ts`) — creates a single
   `BrowserWindow` titled "MES Runner" with a dark background and minimum size.
   Loads the Vite dev server in development and the built `index.html` in
-  production.
-- **Preload bridge** (`electron/preload.ts`) — exposes a minimal `ipcRenderer`
-  surface via `contextBridge`. This is scaffolding; the renderer does not yet
-  depend on it.
+  production. The host window explicitly enables `contextIsolation` and disables
+  `nodeIntegration`.
+- **Managed Chrome controller** (`electron/managedChromeController.ts`) —
+  main-process-owned Playwright persistent context that launches the installed
+  organization-managed Google Chrome application with `channel: "chrome"` and
+  `headless: false`. It verifies the expected macOS Chrome executable exists,
+  uses a dedicated profile at
+  `path.join(app.getPath("userData"), "managed-chrome-profile")`, navigates to
+  the MES URL, reuses the profile across app restarts, and keeps Playwright
+  contexts, pages, process ownership, paths, and diagnostics out of React.
+- **Managed Chrome IPC** (`electron/managedChromeIpc.ts`,
+  `electron/managedChromeChannels.ts`, `electron/preload.ts`) — typed, narrow
+  API exposed as `window.managedChrome`. The renderer can request launch,
+  confirm readiness, stop Chrome, read current state, and subscribe to lifecycle
+  updates. Lifecycle states are `stopped`, `launching`,
+  `awaiting-authentication`, `connected`, `disconnected`, and `error`. Raw
+  `ipcRenderer`, Playwright objects, Chrome process handles, profile paths,
+  cookies, credentials, page contents, and arbitrary browser-control APIs are
+  not exposed to React.
 - **React renderer** — a componentized dark-theme application shell:
   - `AppLayout` — CSS-grid shell with header / sidebar / main / footer regions.
   - `Header` — brand + `StatusBadge` (static "Idle").
   - `Sidebar` — static nav (Dashboard, Automation, Logs, Settings) with local
     UI-only selection state; **no routing**.
   - `Footer` — static status bar ("Ready").
-  - `Welcome` — placeholder main-content view.
+  - `ManagedChromeView` — main-content status/control view for the external
+    managed Chrome window. It displays lifecycle state and offers launch,
+    confirm-ready, and stop controls through the typed preload API.
 - **Styling** — plain CSS + CSS Modules, driven by theme tokens in
   `src/styles/theme.css`; global reset in `src/styles/global.css`.
-- **Security posture** — `contextIsolation` on and `nodeIntegration` off
- .
+- **Security posture** — explicit host-window `contextIsolation` on and
+  `nodeIntegration` off; no `<webview>` tag; no raw IPC in the renderer; MES
+  runs in the installed managed Chrome application, not inside Electron.
+  MES Runner does not spoof browser identity, bypass managed-browser controls,
+  automate credentials or YubiKey authentication, expose CDP endpoints, inspect
+  DOM content, execute page JavaScript, or access cookies/tokens.
 - **Tooling** — Vite + `vite-plugin-electron`, TypeScript (strict), ESLint,
-  `electron-builder` producing per-platform installers.
+  `playwright-core` for installed-Chrome control, `electron-builder` producing
+  per-platform installers.
 - **Engineering docs** — `docs/rfcs/`, `docs/decisions/`, `docs/diagrams/`.
 
 ### Planned implementation (does NOT exist yet)
@@ -66,12 +90,13 @@ for the precise boundary between what exists and what does not.
 The following are goals, not current behavior. Do not reference them as if
 implemented:
 
-- Embedded browser (e.g. `<webview>`/`WebContentsView`) and browser automation.
+- Browser automation, DOM inspection, and arbitrary JavaScript execution inside
+  MES content.
+- CDP reconnection or remote-debugging endpoint management.
 - State-machine-driven workflow engine with guarded transitions.
-- Persistent sessions and storage.
+- Persistent application storage beyond the dedicated managed Chrome profile.
 - Structured logging and crash recovery.
-- Typed, feature-specific IPC channels over the preload bridge.
-- Explicit hardening of `webPreferences` and a Content Security Policy.
+- Content Security Policy.
 - Routing / multiple mounted views.
 - Auto-update via GitHub Releases.
 - GitHub Actions CI/CD.
@@ -135,8 +160,8 @@ Whenever a completed feature changes the system, update this section so future c
 | UI             | React 18 + TypeScript (strict)                      | Routing, feature views                   |
 | Build          | Vite + `vite-plugin-electron`, `electron-builder`   | GitHub Actions CI/CD                     |
 | Styling        | Plain CSS + CSS Modules + theme tokens              | —                                        |
-| Automation     | *(none)*                                            | Embedded browser + state-machine engine  |
-| Persistence    | *(none)*                                            | Sessions, storage, logging, recovery     |
+| Automation     | Managed Chrome foundation via `playwright-core`; no automation | Browser automation + state-machine engine |
+| Persistence    | Dedicated managed Chrome profile                    | App storage, logging, recovery           |
 | Quality        | ESLint, `tsc --noEmit`                              | Test suite                               |
 
 **No Tailwind. No UI component framework** unless explicitly approved via RFC.
@@ -151,15 +176,22 @@ mes-runner/
 ├── index.html              # Renderer entry; document title "MES Runner"
 ├── electron/
 │   ├── main.ts             # Main process / window lifecycle
+│   ├── managedChromeController.ts
+│   │                         # Main-process Playwright persistent-context owner
+│   ├── managedChromeChannels.ts
+│   │                         # Managed Chrome IPC channel constants
+│   ├── managedChromeIpc.ts  # Typed managed Chrome IPC registration
 │   ├── preload.ts          # contextBridge preload
 │   └── electron-env.d.ts   # Electron/renderer type declarations
 ├── src/
 │   ├── main.tsx            # React entry
 │   ├── App.tsx             # Composes the shell
 │   ├── components/
+│   │   ├── browser/        # ManagedChromeView status/control view
 │   │   ├── layout/         # AppLayout, Header, Sidebar, Footer
 │   │   ├── common/         # Reusable primitives (StatusBadge)
-│   │   └── Welcome.tsx     # Placeholder main view
+│   │   └── Welcome.tsx     # Unmounted placeholder component
+│   ├── types/              # Shared renderer/preload TypeScript contracts
 │   └── styles/             # theme.css (tokens) + global.css (reset/base)
 ├── docs/
 │   ├── rfcs/               # Proposals — before implementation

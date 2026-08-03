@@ -20,6 +20,7 @@
 
 .main {
   grid-area: main;
+  min-height: 0;
   overflow: auto;
 }
 
