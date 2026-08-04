@@ -1,4 +1,10 @@
-import { AssetSkipError, NeedsReviewError, WorkflowInvariantError } from './errors'
+import {
+  AssetSkipError,
+  BrowserDisconnectedError,
+  NeedsReviewError,
+  StopRequestedError,
+  WorkflowInvariantError,
+} from './errors'
 import { completeFailureReasonDialog } from './failureDialog'
 import { selectRepairLocatorByKeyboard } from './locatorSelector'
 import { completeMoveToRepair, validateMoveToRepairLocator } from './moveToRepair'
@@ -29,7 +35,20 @@ import {
   findStartButton,
   findStepScanner,
   hasVisibleAssetErrorDialog,
+  inspectInitialScanner,
 } from './stateDetectors'
+import {
+  WORKFLOW_RECOVERY_LIMITS,
+} from './transitionRecoveryCore'
+import { observeMesState } from './mesRuntimeState'
+import {
+  reconcileRuntimeState,
+  type RuntimeAction,
+  type RuntimeDecision,
+  type RuntimeRetryCounters,
+  type WorkflowConfirmedStage,
+  type WorkflowExpectedStage,
+} from './runtimeReconciliation'
 import {
   WORKFLOW_TIMEOUTS,
   type AssetWorkflowContext,
@@ -55,9 +74,7 @@ export async function processAssetWorkflow(
 async function runEolWorkflow(
   context: AssetWorkflowContext,
 ): Promise<CompletionSignal> {
-  await startAsset(context)
-  await runWipePass(context)
-  await verifyWorkflowCompletion(context, 'EOL')
+  await runStateAwareWorkflow(context, 'EOL')
 
   return {
     mode: 'EOL',
@@ -68,10 +85,7 @@ async function runEolWorkflow(
 async function runMriPassWorkflow(
   context: AssetWorkflowContext,
 ): Promise<CompletionSignal> {
-  await startAsset(context)
-  await runWipePass(context)
-  await runDiagnosticPass(context)
-  await verifyWorkflowCompletion(context, 'MRI')
+  await runStateAwareWorkflow(context, 'MRI')
 
   return {
     mode: 'MRI',
@@ -84,12 +98,7 @@ async function runMriFailWorkflow(
   context: AssetWorkflowContext,
 ): Promise<CompletionSignal> {
   validateMoveToRepairLocator(context, context.options.moveToRepairLocator)
-  await startAsset(context)
-  await runWipePass(context)
-  await scanDiagnosticAsset(context)
-  await completeDiagnosticFailure(context)
-  await moveToRepair(context, context.options.moveToRepairLocator)
-  await verifyWorkflowCompletion(context, 'MRI_FAIL')
+  await runStateAwareWorkflow(context, 'MRI_FAIL')
 
   return {
     mode: 'MRI_FAIL',
@@ -97,104 +106,288 @@ async function runMriFailWorkflow(
   }
 }
 
-async function startAsset(
+interface RuntimeProgress {
+  expectedStage: WorkflowExpectedStage
+  lastConfirmedStage: WorkflowConfirmedStage
+  pendingAction: RuntimeAction | null
+  retries: RuntimeRetryCounters
+  transitionDeadline: number
+}
+
+class RuntimeTargetChangedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RuntimeTargetChangedError'
+  }
+}
+
+async function runStateAwareWorkflow(
   context: AssetWorkflowContext,
+  mode: 'EOL' | 'MRI' | 'MRI_FAIL',
 ): Promise<void> {
-  await runWorkflowStep(context, 'Start asset: initial scan', async () => {
-    await closePopupIfPresent(context)
+  const progress: RuntimeProgress = {
+    expectedStage: 'asset-submission',
+    lastConfirmedStage: 'none',
+    pendingAction: null,
+    retries: { assetEnter: 0, confirmWipe: 0, transitionTimedOut: false },
+    transitionDeadline: Date.now() + WORKFLOW_TIMEOUTS.startRecoveryCycleMs,
+  }
+  let lastDiagnosticKey: string | null = null
 
-    const scan1 = await popupAwareWait(
-      context,
-      'initial scanner',
-      () => findInitialScanner(context.page),
-      WORKFLOW_TIMEOUTS.initialScannerMs,
-    )
-    await typeAndSubmit(context, scan1, context.assetId)
-    await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.mriShortDelayMs)
-    await closePopupIfPresent(context)
-  })
+  for (;;) {
+    const checkpointStartedAt = Date.now()
+    await context.checkpoint()
+    const checkpointWaitMs = Date.now() - checkpointStartedAt
+    if (checkpointWaitMs > WORKFLOW_TIMEOUTS.stopPollMs * 2) {
+      progress.transitionDeadline += checkpointWaitMs
+    }
+    const observation = await observeMesState(context)
+    progress.retries.transitionTimedOut = Date.now() >= progress.transitionDeadline
+    const decision = reconcileRuntimeState({
+      mode,
+      observation,
+      expectedStage: progress.expectedStage,
+      lastConfirmedStage: progress.lastConfirmedStage,
+      pendingAction: progress.pendingAction,
+      retries: progress.retries,
+      interruption: {
+        paused: false,
+        stopRequested: context.isStopRequested(),
+        authenticationRequired: false,
+        browserDisconnected: false,
+      },
+    })
+    const diagnosticKey = `${observation.state}:${progress.expectedStage}:${progress.lastConfirmedStage}:${decision.kind}`
+    if (diagnosticKey !== lastDiagnosticKey) {
+      logRuntimeDecision(context, observation.state, progress, decision)
+      lastDiagnosticKey = diagnosticKey
+    }
 
-  await runWorkflowStep(context, 'Start asset: start', async () => {
-    const startButton = await popupAwareWait(
-      context,
-      'Start button',
-      () => findStartButton(context.page),
-      WORKFLOW_TIMEOUTS.startButtonMs,
-    )
-    await clickWithSettles(context, startButton, 150, 350)
-    await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.mriShortDelayMs)
+    if (decision.kind === 'wait' || decision.kind === 'paused') {
+      if (progress.retries.transitionTimedOut && decision.kind === 'wait') {
+        throw new NeedsReviewError(
+          `Timed out while ${decision.reason.toLowerCase()}`,
+        )
+      }
+      await sleepRuntimePoll(context, progress)
+      continue
+    }
+    if (decision.kind === 'skip-forward') {
+      progress.expectedStage = decision.expectedStage
+      progress.lastConfirmedStage = decision.confirmedStage
+      progress.pendingAction = null
+      progress.retries.transitionTimedOut = false
+      progress.transitionDeadline = transitionDeadlineFor(progress.expectedStage)
+      continue
+    }
+    if (decision.kind === 'complete') {
+      confirmPendingCompletion(progress)
+      await verifyWorkflowCompletion(context, mode)
+      return
+    }
+    if (decision.kind === 'needs-review') throw new NeedsReviewError(decision.reason)
+    if (decision.kind === 'stopped') throw new StopRequestedError(decision.reason)
+    if (decision.kind === 'disconnected') throw new BrowserDisconnectedError(decision.reason)
+    if (decision.kind === 'authentication-required') {
+      await sleepRuntimePoll(context, progress)
+      continue
+    }
+
+    try {
+      await executeRuntimeAction(context, decision.action)
+    } catch (error: unknown) {
+      if (error instanceof RuntimeTargetChangedError) {
+        context.log('info', 'Action target changed; re-observing MES.', {
+          reason: error.message,
+        })
+        lastDiagnosticKey = null
+        continue
+      }
+      throw error
+    }
+    advanceAfterAction(progress, decision)
+    lastDiagnosticKey = null
+  }
+}
+
+async function sleepRuntimePoll(
+  context: AssetWorkflowContext,
+  progress: RuntimeProgress,
+): Promise<void> {
+  const startedAt = Date.now()
+  await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.recoveryPollMs)
+  const excessWaitMs = Date.now() - startedAt - WORKFLOW_TIMEOUTS.recoveryPollMs
+  if (excessWaitMs > WORKFLOW_TIMEOUTS.stopPollMs * 2) {
+    progress.transitionDeadline += excessWaitMs
+  }
+}
+
+async function executeRuntimeAction(
+  context: AssetWorkflowContext,
+  action: RuntimeAction,
+): Promise<void> {
+  await runWorkflowStep(context, runtimeActionLabel(action), async () => {
+    switch (action) {
+      case 'submit-asset': {
+        const scanner = await findInitialScanner(context.page)
+        if (scanner === null) throw new RuntimeTargetChangedError('Initial scanner changed before submission.')
+        await typeAndSubmit(context, scanner, context.assetId)
+        return
+      }
+      case 'press-enter': {
+        const scanner = await inspectInitialScanner(context.page, context.assetId)
+        if (scanner.state !== 'initial-asset' || scanner.locator === null || !scanner.enabled) {
+          throw new RuntimeTargetChangedError('Initial scanner changed before Enter recovery.')
+        }
+        await scanner.locator.focus()
+        await context.page.keyboard.press('Enter')
+        return
+      }
+      case 'click-start': {
+        const start = await findStartButton(context.page)
+        if (start === null) throw new RuntimeTargetChangedError('Start changed before activation.')
+        await clickWithSettles(context, start, 150, 350)
+        return
+      }
+      case 'scan-wipe': {
+        const scanner = await findStepScanner(context, 'Wipe')
+        if (scanner === null) throw new RuntimeTargetChangedError('Wipe scanner changed before scanning.')
+        await typeAndSubmit(context, scanner, context.assetId)
+        return
+      }
+      case 'confirm-wipe': {
+        const confirm = await findMriConfirmWipe(context)
+        if (confirm === null) throw new RuntimeTargetChangedError('Confirm Wipe changed before activation.')
+        await clickWithSettles(context, confirm, 75, 300)
+        await sleepWithCheckpoint(context, 1_000)
+        return
+      }
+      case 'scan-diagnostic': {
+        const scanner = await findStepScanner(context, 'Diagnostic')
+        if (scanner === null) throw new RuntimeTargetChangedError('Diagnostic scanner changed before scanning.')
+        await typeAndSubmit(context, scanner, context.assetId)
+        return
+      }
+      case 'confirm-diagnostic': {
+        const confirm = await findMriConfirmDiagnostic(context)
+        if (confirm === null) throw new RuntimeTargetChangedError('Confirm Diagnostic changed before activation.')
+        await clickWithSettles(context, confirm, 75, 300)
+        await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.mriFinalSettleMs)
+        return
+      }
+      case 'click-diagnostic-failed': {
+        const failed = await findDiagnosticFailedButton(context)
+        if (failed === null) throw new RuntimeTargetChangedError('Diagnostic Failed changed before activation.')
+        await clickWithSettles(context, failed, 75, 300)
+        return
+      }
+      case 'complete-failure-dialog':
+        await completeFailureReasonDialog(context)
+        return
+      case 'complete-move-to-repair':
+        await completeMoveToRepair(context, context.options.moveToRepairLocator)
+        return
+      case 'handle-business-error':
+        await closePopupIfPresent(context)
+        return
+    }
   })
 }
 
-async function runWipePass(
-  context: AssetWorkflowContext,
-): Promise<void> {
-  await runWorkflowStep(context, 'Wipe pass', async () => {
-    const wipeScan = await waitForMriStepInput(context, 'Wipe')
-    await typeAndSubmit(context, wipeScan, context.assetId)
+function advanceAfterAction(progress: RuntimeProgress, decision: Extract<RuntimeDecision, { kind: 'act' | 'retry-transition' }>): void {
+  const action = decision.action
+  const existingDeadline = progress.transitionDeadline
+  progress.pendingAction = action
+  progress.retries.transitionTimedOut = false
 
-    const confirmWipe = await popupAwareWait(
-      context,
-      'Confirm wipe button',
-      () => findMriConfirmWipe(context),
-      WORKFLOW_TIMEOUTS.confirmWipeMs,
-    )
-    await clickWithSettles(context, confirmWipe, 75, 300)
-    await closePopupIfPresent(context)
-  })
+  switch (action) {
+    case 'submit-asset':
+    case 'press-enter':
+      progress.expectedStage = 'start'
+      if (action === 'press-enter') progress.retries.assetEnter += 1
+      break
+    case 'click-start':
+      progress.expectedStage = 'wipe-scan'
+      progress.lastConfirmedStage = 'asset-submitted'
+      break
+    case 'scan-wipe':
+      progress.expectedStage = 'wipe-confirm'
+      break
+    case 'confirm-wipe':
+      progress.expectedStage = 'wipe-transition'
+      progress.lastConfirmedStage = 'wipe-scanned'
+      if (decision.kind === 'retry-transition') progress.retries.confirmWipe += 1
+      break
+    case 'scan-diagnostic':
+      progress.expectedStage = 'diagnostic-action'
+      break
+    case 'confirm-diagnostic':
+      progress.expectedStage = 'diagnostic-transition'
+      progress.lastConfirmedStage = 'diagnostic-scanned'
+      break
+    case 'click-diagnostic-failed':
+      progress.expectedStage = 'failure-dialog'
+      progress.lastConfirmedStage = 'diagnostic-scanned'
+      break
+    case 'complete-failure-dialog':
+      progress.expectedStage = 'move-to-repair'
+      progress.lastConfirmedStage = 'diagnostic-failed'
+      break
+    case 'complete-move-to-repair':
+      progress.expectedStage = 'completion'
+      progress.lastConfirmedStage = 'move-confirmed'
+      progress.pendingAction = null
+      break
+    case 'handle-business-error':
+      progress.pendingAction = null
+      break
+  }
+
+  progress.transitionDeadline =
+    action === 'confirm-wipe' && decision.kind === 'retry-transition'
+      ? existingDeadline
+      : transitionDeadlineFor(progress.expectedStage)
 }
 
-async function scanDiagnosticAsset(
-  context: AssetWorkflowContext,
-): Promise<void> {
-  await runWorkflowStep(context, 'Diagnostic scan', async () => {
-    const diagnosticScan = await waitForMriStepInput(context, 'Diagnostic')
-    await typeAndSubmit(context, diagnosticScan, context.assetId)
-  })
+function confirmPendingCompletion(progress: RuntimeProgress): void {
+  if (progress.pendingAction === 'confirm-wipe') {
+    progress.lastConfirmedStage = 'wipe-confirmed'
+  } else if (progress.pendingAction === 'confirm-diagnostic') {
+    progress.lastConfirmedStage = 'diagnostic-confirmed'
+  }
+  progress.pendingAction = null
 }
 
-async function runDiagnosticPass(
-  context: AssetWorkflowContext,
-): Promise<void> {
-  await scanDiagnosticAsset(context)
-
-  await runWorkflowStep(context, 'Diagnostic pass', async () => {
-    const confirmDiagnostic = await popupAwareWait(
-      context,
-      'Confirm diagnostic button',
-      () => findMriConfirmDiagnostic(context),
-      WORKFLOW_TIMEOUTS.confirmDiagnosticMs,
-    )
-    await clickWithSettles(context, confirmDiagnostic, 75, 300)
-    await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.mriFinalSettleMs)
-    await closePopupIfPresent(context)
-  })
+function transitionDeadlineFor(stage: WorkflowExpectedStage): number {
+  const timeout = stage === 'wipe-transition'
+    ? WORKFLOW_TIMEOUTS.wipeTransitionMs
+    : WORKFLOW_TIMEOUTS.defaultMs
+  return Date.now() + timeout
 }
 
-async function completeDiagnosticFailure(
-  context: AssetWorkflowContext,
-): Promise<void> {
-  await runWorkflowStep(context, 'Diagnostic failed action', async () => {
-    const failedButton = await scopedWait(
-      context,
-      'Diagnostic failed button',
-      () => findDiagnosticFailedButton(context),
-      WORKFLOW_TIMEOUTS.defaultMs,
-    )
-    await clickWithSettles(context, failedButton, 75, 300)
-  })
-
-  await runWorkflowStep(context, 'Failure reason dialog', async () => {
-    await completeFailureReasonDialog(context)
-  })
+function runtimeActionLabel(action: RuntimeAction): string {
+  return action.split('-').map((part) => part[0].toUpperCase() + part.slice(1)).join(' ')
 }
 
-async function moveToRepair(
+function logRuntimeDecision(
   context: AssetWorkflowContext,
-  locator: string,
-): Promise<void> {
-  await runWorkflowStep(context, 'Move to repair', async () => {
-    await completeMoveToRepair(context, locator)
+  observedState: string,
+  progress: RuntimeProgress,
+  decision: RuntimeDecision,
+): void {
+  const action = 'action' in decision ? decision.action : 'none'
+  context.log(decision.kind === 'needs-review' ? 'error' : 'info', 'Runtime state reconciled.', {
+    reason: [
+      `observed=${observedState}`,
+      `expected=${progress.expectedStage}`,
+      `lastConfirmed=${progress.lastConfirmedStage}`,
+      `pending=${progress.pendingAction ?? 'none'}`,
+      `decision=${decision.kind}`,
+      `action=${action}`,
+      `assetEnterRetry=${progress.retries.assetEnter}/${WORKFLOW_RECOVERY_LIMITS.assetSubmissionEnterRetries}`,
+      `confirmWipeRetry=${progress.retries.confirmWipe}/${WORKFLOW_RECOVERY_LIMITS.confirmWipeRetries}`,
+      `reason=${decision.reason}`,
+    ].join('; '),
   })
 }
 
@@ -213,18 +406,6 @@ async function verifyWorkflowCompletion(
   }
 
   await verifyMoveToRepairCompletion(context)
-}
-
-async function waitForMriStepInput(
-  context: AssetWorkflowContext,
-  stepName: 'Wipe' | 'Diagnostic',
-) {
-  return popupAwareWait(
-    context,
-    `${stepName} scanner`,
-    () => findStepScanner(context, stepName),
-    WORKFLOW_TIMEOUTS.defaultMs,
-  )
 }
 
 async function runRepairWorkflow(

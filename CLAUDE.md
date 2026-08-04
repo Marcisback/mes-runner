@@ -11,14 +11,14 @@ before making changes.
 MES Runner is a production-quality desktop automation platform built with
 Electron, React, TypeScript, and Playwright browser-control APIs. It uses the
 installed organization-managed Google Chrome application as the MES browser and
-will later drive it with browser automation and orchestrate long-running,
-recoverable workflows as explicit state machines — with persistent application
-storage, structured logging, crash recovery, and auto-updating.
+drives the proven EOL and MRI workflows through runtime-observed, guarded
+transitions. Persistent workflow storage, restart/crash recovery, and
+auto-updating remain planned.
 
-Today the repository contains a working **application shell** and the first
-managed-Chrome browser foundation. Most automation platform capabilities are still
-planned; see [Current Architecture](#current-architecture) for the precise
-boundary between what exists and what does not.
+Today the repository contains a working desktop runner, managed-Chrome browser
+foundation, CDP screencast surface, and runtime-aware automation for the proven
+EOL and MRI workflows. See [Current Architecture](#current-architecture) for
+the precise boundary between implemented, validated, and planned behavior.
 
 ## Project Goals
 
@@ -41,48 +41,76 @@ boundary between what exists and what does not.
 
 ### Current implementation
 
-- **Electron main process** (`electron/main.ts`) — creates a single
-  `BrowserWindow` titled "MES Runner" with a dark background and minimum size.
-  Loads the Vite dev server in development and the built `index.html` in
-  production. The host window explicitly enables `contextIsolation` and disables
-  `nodeIntegration`.
+- **Electron main process** (`electron/main.ts`) — creates the hardened host
+  `BrowserWindow`, owns managed-Chrome and workflow-runner orchestration, and
+  registers narrow typed IPC. The host explicitly enables `contextIsolation`
+  and disables `nodeIntegration`.
 - **Managed Chrome controller** (`electron/managedChromeController.ts`) —
   main-process-owned Playwright persistent context that launches the installed
   organization-managed Google Chrome application with `channel: "chrome"` and
-  `headless: false`. It verifies the expected macOS Chrome executable exists,
-  uses a dedicated profile at
-  `path.join(app.getPath("userData"), "managed-chrome-profile")`, navigates to
-  the MES URL, reuses the profile across app restarts, and keeps Playwright
-  contexts, pages, process ownership, paths, and diagnostics out of React.
+  a dedicated profile at
+  `path.join(app.getPath("userData"), "managed-chrome-profile")`. Normal
+  automation is headless at a fixed 1600x1000 viewport and is displayed inside
+  Electron through main-process-owned CDP screencasting. Authentication opens a
+  visible managed-Chrome window for manual login and YubiKey interaction, then
+  returns to a fresh headless context. Playwright contexts, pages, CDP sessions,
+  process ownership, profile paths, and credentials remain outside React.
 - **Managed Chrome IPC** (`electron/managedChromeIpc.ts`,
   `electron/managedChromeChannels.ts`, `electron/preload.ts`) — typed, narrow
-  API exposed as `window.managedChrome`. The renderer can request launch,
-  confirm readiness, stop Chrome, read current state, and subscribe to lifecycle
-  updates. Lifecycle states are `stopped`, `launching`,
-  `awaiting-authentication`, `connected`, `disconnected`, and `error`. Raw
-  `ipcRenderer`, Playwright objects, Chrome process handles, profile paths,
-  cookies, credentials, page contents, and arbitrary browser-control APIs are
-  not exposed to React.
-- **React renderer** — a componentized dark-theme application shell:
-  - `AppLayout` — CSS-grid shell with header / sidebar / main / footer regions.
-  - `Header` — brand + `StatusBadge` (static "Idle").
-  - `Sidebar` — static nav (Dashboard, Automation, Logs, Settings) with local
-    UI-only selection state; **no routing**.
-  - `Footer` — static status bar ("Ready").
-  - `ManagedChromeView` — main-content status/control view for the external
-    managed Chrome window. It displays lifecycle state and offers launch,
-    confirm-ready, and stop controls through the typed preload API.
+  APIs exposed as `window.managedChrome` and `window.eolRunner`. The renderer
+  sends lifecycle, input-forwarding, and runner intents and receives sanitized
+  snapshots and screencast frames. Raw IPC, Playwright, CDP sessions, Chrome
+  handles, cookies, credentials, profile paths, and arbitrary browser control
+  are not exposed to React.
+- **Runtime MES state observer**
+  (`electron/workflows/mesRuntimeState.ts`) — a central non-mutating observer
+  composed from stage-scoped detectors. It identifies landing, retained asset,
+  Start, Wipe, Diagnostic, failure-dialog, Move-to-Repair, completion evidence,
+  known business-error, unknown, and ambiguous states. It returns sanitized
+  counts and booleans, not DOM content or Playwright objects. Multiple
+  conflicting actionable states fail closed as ambiguous.
+- **Pure reconciliation policy**
+  (`electron/workflows/runtimeReconciliation.ts`) — accepts workflow mode,
+  observed MES state, expected stage, last confirmed stage, pending action,
+  retry counters, and lifecycle interruption state as separate typed inputs. It
+  returns an explicit act, wait, skip-forward, complete, retry, needs-review,
+  authentication, disconnection, pause, or stop decision without touching MES.
+- **Workflow runtime** (`electron/workflows/workflows.ts`) — EOL, MRI Pass, and
+  MRI Fail share an observation/decision/action loop. Every action is selected
+  from a fresh observation, re-resolves its scoped target before interaction,
+  and requires a recognized postcondition. The loop moves forward when MES has
+  already advanced, waits through bounded latency, and resumes from a fresh
+  observation after pause or authentication. Unknown and ambiguous states fail
+  closed. Repair keeps its existing dedicated implementation and remains
+  unverified.
+- **Recovery policy** — retained-asset submission permits at most two trusted
+  Enter retries after state reconciliation. Confirm Wipe permits at most one
+  retry within a 60-second transition deadline. Busy controls are not replayed,
+  already-present Wipe/Diagnostic scans are not repeated, and MRI Fail cannot
+  complete until Move-to-Repair completion is confirmed.
+- **Runner and diagnostics** (`electron/eolRunner.ts`) — executes assets
+  sequentially, supports Pause, Resume, and Stop Safely at action boundaries,
+  and keeps bounded sanitized diagnostics in memory. Runtime progress is also
+  memory-only; application restart recovery and persistent workflow checkpoints
+  are not implemented.
+- **React renderer** — dashboard, runner workspace, streamed MES surface,
+  contextual runner controls, bounded diagnostics view, result history, and
+  settings presentation. Automation policy remains in the main process.
 - **Styling** — plain CSS + CSS Modules, driven by theme tokens in
   `src/styles/theme.css`; global reset in `src/styles/global.css`.
 - **Security posture** — explicit host-window `contextIsolation` on and
-  `nodeIntegration` off; no `<webview>` tag; no raw IPC in the renderer; MES
-  runs in the installed managed Chrome application, not inside Electron.
-  MES Runner does not spoof browser identity, bypass managed-browser controls,
-  automate credentials or YubiKey authentication, expose CDP endpoints, inspect
-  DOM content, execute page JavaScript, or access cookies/tokens.
+  `nodeIntegration` off; no `<webview>` tag; no raw IPC in the renderer. MES
+  Runner uses scoped Playwright roles, labels, placeholders, and controls for
+  workflow automation but does not spoof browser identity, bypass managed
+  controls, automate credentials or YubiKey authentication, expose CDP or
+  Playwright to React, or access cookies and tokens.
 - **Tooling** — Vite + `vite-plugin-electron`, TypeScript (strict), ESLint,
   `playwright-core` for installed-Chrome control, `electron-builder` producing
   per-platform installers.
+- **Automated validation** — Node test coverage for pure workflow policy and
+  supporting logic, strict TypeScript, ESLint, and Vite builds. Phase 1 runtime
+  awareness passes automated validation but still requires approved manual
+  testing against live MES behavior; it is not production-verified.
 - **Engineering docs** — `docs/rfcs/`, `docs/decisions/`, `docs/diagrams/`.
 
 ### Planned implementation (does NOT exist yet)
@@ -90,17 +118,18 @@ boundary between what exists and what does not.
 The following are goals, not current behavior. Do not reference them as if
 implemented:
 
-- Browser automation, DOM inspection, and arbitrary JavaScript execution inside
-  MES content.
-- CDP reconnection or remote-debugging endpoint management.
-- State-machine-driven workflow engine with guarded transitions.
-- Persistent application storage beyond the dedicated managed Chrome profile.
-- Structured logging and crash recovery.
+- Persistent workflow checkpoints and restart/crash recovery.
+- Persistent run history or application storage beyond the dedicated Chrome
+  profile.
+- Verification or redesign of the Repair workflow.
+- Production approval of Phase 1 runtime state awareness after controlled live
+  MES testing with approved assets.
 - Content Security Policy.
 - Routing / multiple mounted views.
 - Auto-update via GitHub Releases.
 - GitHub Actions CI/CD.
-- Automated tests (unit / integration / e2e).
+- Broader integration and end-to-end tests against a non-production MES test
+  environment.
 
 ## Living Architecture
 
@@ -160,9 +189,9 @@ Whenever a completed feature changes the system, update this section so future c
 | UI             | React 18 + TypeScript (strict)                      | Routing, feature views                   |
 | Build          | Vite + `vite-plugin-electron`, `electron-builder`   | GitHub Actions CI/CD                     |
 | Styling        | Plain CSS + CSS Modules + theme tokens              | —                                        |
-| Automation     | Managed Chrome foundation via `playwright-core`; no automation | Browser automation + state-machine engine |
-| Persistence    | Dedicated managed Chrome profile                    | App storage, logging, recovery           |
-| Quality        | ESLint, `tsc --noEmit`                              | Test suite                               |
+| Automation     | Managed Chrome, CDP screencast, typed runtime observer/reconciliation via `playwright-core` | Persistent restart recovery; verified Repair |
+| Persistence    | Dedicated Chrome profile; bounded runtime state and diagnostics in memory | Persistent checkpoints and run history |
+| Quality        | Node tests, ESLint, strict TypeScript, Vite builds   | Non-production MES integration/e2e tests |
 
 **No Tailwind. No UI component framework** unless explicitly approved via RFC.
 
@@ -181,16 +210,16 @@ mes-runner/
 │   ├── managedChromeChannels.ts
 │   │                         # Managed Chrome IPC channel constants
 │   ├── managedChromeIpc.ts  # Typed managed Chrome IPC registration
+│   ├── eolRunner.ts         # Sequential runner and bounded diagnostics
+│   ├── workflows/           # Observer, reconciliation, actions, detectors/tests
 │   ├── preload.ts          # contextBridge preload
 │   └── electron-env.d.ts   # Electron/renderer type declarations
 ├── src/
 │   ├── main.tsx            # React entry
 │   ├── App.tsx             # Composes the shell
-│   ├── components/
-│   │   ├── browser/        # ManagedChromeView status/control view
-│   │   ├── layout/         # AppLayout, Header, Sidebar, Footer
-│   │   ├── common/         # Reusable primitives (StatusBadge)
-│   │   └── Welcome.tsx     # Unmounted placeholder component
+│   ├── components/         # Dashboard, runner, shell, settings, common UI
+│   ├── state/              # Renderer workspace and engine providers
+│   ├── lib/                # Pure renderer derivations and tests
 │   ├── types/              # Shared renderer/preload TypeScript contracts
 │   └── styles/             # theme.css (tokens) + global.css (reset/base)
 ├── docs/

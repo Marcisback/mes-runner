@@ -42,6 +42,15 @@ Each record is short and follows a consistent shape:
 NNNN-short-title.md      e.g. 0001-use-playwright-for-automation.md
 ```
 
+## Records
+
+- [ADR 0001: Embedded Browser Foundation](./0001-embedded-browser-foundation.md)
+  - Superseded
+- [ADR 0002: Managed Chrome Integration](./0002-managed-chrome-integration.md)
+  - Accepted
+- [ADR 0003: Runtime MES State Awareness](./0003-runtime-mes-state-awareness.md)
+  - Accepted; automated validation complete, approved live MES validation pending
+
 ## Related
 
 - [`../rfcs/`](../rfcs/) — the proposal that preceded the decision.

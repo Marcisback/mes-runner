@@ -9,6 +9,7 @@ import {
 import { SELECTORS } from './types'
 import { WorkflowInvariantError } from './errors'
 import type { WorkflowRuntime } from './types'
+import type { ReconciledWorkflowState } from './transitionRecoveryCore'
 
 const CONTAINER_SELECTOR =
   "section, form, article, [role='region'], [role='group'], div"
@@ -18,6 +19,165 @@ export async function findInitialScanner(page: Page): Promise<Locator | null> {
     page.getByPlaceholder(SELECTORS.firstScanText),
     'initial asset scanner',
   )
+}
+
+export async function inspectInitialScanner(
+  page: Page,
+  expectedAssetId: string,
+): Promise<{
+  state: 'initial-empty' | 'initial-asset' | 'initial-unexpected' | 'ambiguous'
+  locator: Locator | null
+  candidateCount: number
+  enabled: boolean
+}> {
+  const matches = await visibleMatches(page.getByPlaceholder(SELECTORS.firstScanText))
+
+  if (matches.length !== 1) {
+    return {
+      state: 'ambiguous',
+      locator: null,
+      candidateCount: matches.length,
+      enabled: false,
+    }
+  }
+
+  const locator = matches[0]
+  const value = await locator.inputValue().catch(() => null)
+  const enabled = await isLocatorEnabled(locator)
+
+  if (value === null) {
+    return { state: 'ambiguous', locator: null, candidateCount: 1, enabled }
+  }
+
+  if (value === expectedAssetId) {
+    return { state: 'initial-asset', locator, candidateCount: 1, enabled }
+  }
+
+  if (value.trim().length === 0) {
+    return { state: 'initial-empty', locator, candidateCount: 1, enabled }
+  }
+
+  return { state: 'initial-unexpected', locator, candidateCount: 1, enabled }
+}
+
+export async function reconcileWorkflowState(
+  runtime: WorkflowRuntime,
+  expectedAssetId: string,
+  initialEmptyMeansCompleted: boolean,
+): Promise<{ state: ReconciledWorkflowState; locator: Locator | null }> {
+  await runtime.ensurePageReady()
+
+  const start = await findStartButton(runtime.page)
+  const wipe = await inspectStepState(runtime, 'Wipe', expectedAssetId)
+  const diagnostic = await inspectStepState(runtime, 'Diagnostic', expectedAssetId)
+  const initial = await inspectInitialScanner(runtime.page, expectedAssetId)
+  const recognized = [start !== null, wipe !== null, diagnostic !== null].filter(Boolean).length
+
+  if (recognized > 1 || initial.candidateCount > 1) {
+    return { state: 'ambiguous', locator: null }
+  }
+
+  if (diagnostic !== null) {
+    return { state: 'diagnostic', locator: diagnostic.input }
+  }
+
+  if (wipe !== null) {
+    return {
+      state: wipe.inputActionable || wipe.passActionable
+        ? 'wipe-actionable'
+        : 'wipe-processing',
+      locator: wipe.button,
+    }
+  }
+
+  if (start !== null) {
+    return { state: 'start-available', locator: start }
+  }
+
+  if (
+    initial.state === 'initial-empty' &&
+    initial.enabled &&
+    initialEmptyMeansCompleted
+  ) {
+    return { state: 'completed', locator: initial.locator }
+  }
+
+  return initial
+}
+
+export async function inspectStepState(
+  runtime: WorkflowRuntime,
+  stepName: 'Wipe' | 'Diagnostic',
+  expectedAssetId?: string,
+): Promise<{
+  input: Locator
+  button: Locator
+  inputActionable: boolean
+  passActionable: boolean
+  failActionable: boolean
+  inputMatchesAsset: boolean
+} | null> {
+  const inputCandidates = runtime.page.getByPlaceholder(/^Scan asset tag or serial number$/i)
+  const inputCount = await inputCandidates.count().catch(() => 0)
+  const matches: Array<{
+    input: Locator
+    button: Locator
+    inputActionable: boolean
+    passActionable: boolean
+    failActionable: boolean
+    inputMatchesAsset: boolean
+  }> = []
+  const buttonName = stepName === 'Wipe'
+    ? SELECTORS.confirmWipeText
+    : /Confirm\s+diagnostic|Diagnostic failed/i
+
+  for (let index = 0; index < inputCount; index += 1) {
+    const input = inputCandidates.nth(index)
+    if (!(await isLocatorVisible(input))) continue
+
+    const panel = input.locator(
+      `xpath=ancestor::*[.//*[normalize-space(.)="${stepName}"] and .//button][1]`,
+    )
+    if ((await panel.count().catch(() => 0)) !== 1 || !(await isLocatorVisible(panel))) continue
+
+    const buttons = await visibleMatches(panel.getByRole('button', { name: buttonName }))
+    if (buttons.length === 0) continue
+    if (stepName === 'Wipe' && buttons.length > 1) {
+      throw new WorkflowInvariantError(
+        `Wipe recovery state resolved ${buttons.length} Confirm Wipe buttons; expected exactly one.`,
+      )
+    }
+    const button = buttons[0]
+    const passButton = stepName === 'Wipe'
+      ? button
+      : await singleVisibleOrNull(
+          panel.getByRole('button', { name: SELECTORS.confirmDiagnosticText }),
+          'Diagnostic pass action',
+        )
+    const failButton = stepName === 'Diagnostic'
+      ? await singleVisibleOrNull(
+          panel.locator('button[aria-label="Diagnostic failed"]'),
+          'Diagnostic fail action',
+        )
+      : null
+    matches.push({
+      input,
+      button,
+      inputActionable: await isLocatorEnabled(input),
+      passActionable: passButton !== null && await isLocatorEnabled(passButton),
+      failActionable: failButton !== null && await isLocatorEnabled(failButton),
+      inputMatchesAsset: expectedAssetId !== undefined &&
+        (await input.inputValue().catch(() => null)) === expectedAssetId,
+    })
+  }
+
+  if (matches.length > 1) {
+    throw new WorkflowInvariantError(
+      `${stepName} recovery state resolved ${matches.length} candidates; expected exactly one.`,
+    )
+  }
+
+  return matches[0] ?? null
 }
 
 export async function findStartButton(page: Page): Promise<Locator | null> {

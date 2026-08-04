@@ -44,6 +44,7 @@ export class EolRunner {
   private nextDiagnosticId = 1
   private currentStep: string | null = null
   private lastCompletedStep: string | null = null
+  private authenticationWaitLogged = false
 
   constructor(
     private readonly hostWindow: BrowserWindow,
@@ -79,6 +80,7 @@ export class EolRunner {
     this.diagnostics = []
     this.currentStep = null
     this.lastCompletedStep = null
+    this.authenticationWaitLogged = false
     this.snapshot = {
       state: 'running',
       mode: request.options.mode,
@@ -214,6 +216,12 @@ export class EolRunner {
       return true
     } catch (error: unknown) {
       if (error instanceof StopRequestedError) {
+        this.updateAsset(asset.id, 'needs-review', 'stopped', error)
+        this.logDiagnostic('warning', 'Asset stopped at a safe action boundary.', {
+          assetId: asset.id,
+          errorClass: error.name,
+          reason: 'stopped',
+        })
         this.setState('completed')
         return false
       }
@@ -266,8 +274,11 @@ export class EolRunner {
     assetId: string,
     options: WorkflowOptions,
   ): AssetWorkflowContext {
+    const getCurrentPage = () => this.getReadyPage() ?? page
     return {
-      page,
+      get page() {
+        return getCurrentPage()
+      },
       assetId,
       options,
       checkpoint: () => this.waitAtCheckpoint(),
@@ -293,7 +304,7 @@ export class EolRunner {
       await delay(WORKFLOW_TIMEOUTS.stopPollMs)
     }
 
-    if (this.stopRequested && this.snapshot.currentAssetId === null) {
+    if (this.stopRequested) {
       throw new StopRequestedError()
     }
 
@@ -301,9 +312,18 @@ export class EolRunner {
   }
 
   private async ensurePageReady(): Promise<void> {
-    const page = this.getReadyPage()
+    for (;;) {
+      const page = this.getReadyPage()
 
-    if (page === null) {
+      if (page !== null) {
+        if (this.authenticationWaitLogged) {
+          this.logDiagnostic('info', 'Authentication completed; re-observing MES state.')
+          this.authenticationWaitLogged = false
+        }
+        await ensureConnected(page)
+        return
+      }
+
       const lifecycle = this.managedChrome.getState().lifecycle
 
       if (
@@ -312,15 +332,18 @@ export class EolRunner {
         lifecycle === 'authenticating' ||
         lifecycle === 'resuming-headless'
       ) {
-        this.logDiagnostic('warning', 'Authentication transition detected.')
-        throw new AuthenticationRequiredError()
+        if (!this.authenticationWaitLogged) {
+          this.logDiagnostic('warning', 'Authentication transition detected; workflow is waiting.')
+          this.authenticationWaitLogged = true
+        }
+        if (this.stopRequested) throw new StopRequestedError()
+        await delay(WORKFLOW_TIMEOUTS.stopPollMs)
+        continue
       }
 
       this.logDiagnostic('error', 'Browser disconnected or unavailable.')
       throw new BrowserDisconnectedError()
     }
-
-    await ensureConnected(page)
   }
 
   private getReadyPage(): Page | null {
