@@ -1,5 +1,6 @@
 import type {
   RepairOutcome,
+  RunnerId,
   WorkflowMode,
 } from './eolRunner'
 
@@ -15,15 +16,12 @@ export type PrimaryWorkspaceId = (typeof PRIMARY_WORKSPACES)[number]
 export type WorkspaceId = PrimaryWorkspaceId | string
 
 export interface RunnerTab {
-  id: string
+  id: RunnerId
   name: string
 }
 
 /**
- * Per-runner configuration. Each runner tab keeps its own draft configuration
- * so an operator can prepare a run in one tab while another runner owns the
- * (single) automation engine. This is UI state only — it is dispatched to the
- * shared engine when the runner starts.
+ * Per-runner draft configuration dispatched only to that runner's engine.
  */
 export interface RunnerConfig {
   mode: WorkflowMode
@@ -34,9 +32,7 @@ export interface RunnerConfig {
 }
 
 /**
- * Presentation status for a runner tab / card. Because the engine is a
- * singleton, only the runner that currently owns the engine reflects live
- * engine state; every other runner is reported as idle.
+ * Presentation status for one independently owned runner tab or card.
  */
 export type RunnerStatus =
   | 'running'

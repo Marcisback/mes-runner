@@ -16,26 +16,23 @@ import styles from './WorkspaceTabs.module.css'
  * closing a tab.
  */
 export function WorkspaceTabs() {
-  const { snapshot } = useEngine()
+  const { runners: snapshots } = useEngine()
   const {
     runners,
     activeWorkspaceId,
-    engineOwnerId,
     setActiveWorkspace,
     closeRunner,
   } = useWorkspace()
 
-  const engineBusy = isEngineActive(snapshot)
-
   function handleClose(runnerId: string): void {
-    const ownsActiveEngine = engineBusy && engineOwnerId === runnerId
-
-    if (ownsActiveEngine) {
-      // Guarded by the disabled control; ignored defensively.
-      return
+    const snapshot = snapshots[runnerId as keyof typeof snapshots]?.workflow
+    if (snapshot !== undefined && isEngineActive(snapshot)) {
+      const confirmed = window.confirm(
+        'This runner is active. Stop it safely and close the runner?',
+      )
+      if (!confirmed) return
     }
-
-    closeRunner(runnerId)
+    void closeRunner(runnerId as import('../../types/eolRunner').RunnerId)
   }
 
   return (
@@ -54,8 +51,8 @@ export function WorkspaceTabs() {
 
       {runners.map((runner) => {
         const active = activeWorkspaceId === runner.id
-        const status = deriveRunnerStatus(runner.id, engineOwnerId, snapshot)
-        const ownsActiveEngine = engineBusy && engineOwnerId === runner.id
+        const snapshot = snapshots[runner.id]?.workflow
+        const status = snapshot === undefined ? 'idle' : deriveRunnerStatus(snapshot)
 
         return (
           <div
@@ -77,17 +74,8 @@ export function WorkspaceTabs() {
             <button
               type="button"
               className={styles.close}
-              disabled={ownsActiveEngine}
-              aria-label={
-                ownsActiveEngine
-                  ? `Cannot close ${runner.name} while it is running. Stop it first.`
-                  : `Close ${runner.name}`
-              }
-              title={
-                ownsActiveEngine
-                  ? 'Stop this runner before closing.'
-                  : `Close ${runner.name}`
-              }
+              aria-label={`Close ${runner.name}`}
+              title={`Close ${runner.name}`}
               onClick={() => handleClose(runner.id)}
             >
               <CloseIcon size={14} />

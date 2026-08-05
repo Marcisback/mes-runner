@@ -90,14 +90,8 @@ export function deriveTodayProgress(snapshot: EolRunnerSnapshot): TodayProgress 
  * is idle because only one run can execute at a time.
  */
 export function deriveRunnerStatus(
-  runnerId: string,
-  engineOwnerId: string | null,
   snapshot: EolRunnerSnapshot,
 ): RunnerStatus {
-  if (runnerId !== engineOwnerId) {
-    return 'idle'
-  }
-
   switch (snapshot.state) {
     case 'running':
     case 'stopping':

@@ -52,6 +52,8 @@ NNNN-short-title.md      e.g. 0001-use-playwright-for-automation.md
   - Accepted; automated validation complete, approved live MES validation pending
 - [ADR 0004: Local History Persistence](./0004-local-history-persistence.md)
   - Accepted
+- [ADR 0005: Multi-Runner Browser Architecture](./0005-multi-runner-browser-architecture.md)
+  - Accepted; approved live multi-page MES validation pending
 
 ## Related
 

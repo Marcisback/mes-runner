@@ -16,7 +16,7 @@ import {
   type ValidatedHistoryRange,
 } from './historyValidation.ts'
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 const SAFE_DATABASE_ERROR = 'Local history is unavailable.'
 
 interface RunResult {
@@ -75,13 +75,17 @@ export class LocalHistoryStore {
     return () => this.listeners.delete(listener)
   }
 
-  async createRun(mode: WorkflowMode, startedAt: string): Promise<number | null> {
+  async createRun(
+    mode: WorkflowMode,
+    startedAt: string,
+    runnerLabel: string | null = null,
+  ): Promise<number | null> {
     return this.write(async (database) => {
       const result = await run(
         database,
-        `INSERT INTO runs (mode, status, started_at, finished_at)
-         VALUES (?, 'running', ?, NULL)`,
-        [mode, startedAt],
+        `INSERT INTO runs (mode, status, started_at, finished_at, runner_label)
+         VALUES (?, 'running', ?, NULL, ?)`,
+        [mode, startedAt, runnerLabel],
       )
       return result.lastID
     }, null)
@@ -239,6 +243,9 @@ export class LocalHistoryStore {
           CREATE INDEX IF NOT EXISTS idx_asset_results_mode ON asset_results(mode);
           CREATE INDEX IF NOT EXISTS idx_asset_results_outcome ON asset_results(outcome);
         `)
+      }
+      if ((version?.user_version ?? 0) < 2) {
+        await exec(database, 'ALTER TABLE runs ADD COLUMN runner_label TEXT')
       }
       await exec(database, `PRAGMA user_version = ${SCHEMA_VERSION}`)
       await exec(database, 'COMMIT')

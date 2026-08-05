@@ -1,25 +1,19 @@
 import { useEngine } from '../../state/engineContext'
 import { useWorkspace } from '../../state/workspaceContext'
 import { isEngineActive } from '../../lib/dashboard'
-import type { EolRunnerState } from '../../types/eolRunner'
 import styles from './StatusBar.module.css'
-
-const RUNNER_STATE_LABEL: Record<EolRunnerState, string> = {
-  idle: 'Ready',
-  running: 'Running',
-  paused: 'Paused',
-  stopping: 'Stopping safely',
-  completed: 'Run complete',
-  error: 'Error',
-}
 
 /** Bottom status bar: engine state on the left, runner tab count on the right. */
 export function StatusBar() {
-  const { snapshot } = useEngine()
+  const { runners: snapshots } = useEngine()
   const { runners } = useWorkspace()
 
-  const busy = isEngineActive(snapshot)
-  const stateLabel = RUNNER_STATE_LABEL[snapshot.state]
+  const workflows = Object.values(snapshots)
+    .filter((runner) => runner !== undefined)
+    .map((runner) => runner.workflow)
+  const busy = workflows.some(isEngineActive)
+  const error = workflows.some((workflow) => workflow.state === 'error')
+  const stateLabel = busy ? 'Runners active' : error ? 'Attention required' : 'Ready'
   const runnerCount = runners.length
 
   return (
@@ -27,7 +21,7 @@ export function StatusBar() {
       <span className={styles.left}>
         <span
           className={`${styles.dot} ${busy ? styles.busy : styles.ready} ${
-            snapshot.state === 'error' ? styles.error : ''
+            error ? styles.error : ''
           }`}
           aria-hidden="true"
         />

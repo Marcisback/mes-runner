@@ -5,6 +5,7 @@ export const MANAGED_CHROME_IPC_CHANNELS = {
   cancelAuthentication: 'managed-chrome:cancel-authentication',
   stop: 'managed-chrome:stop',
   getState: 'managed-chrome:get-state',
+  selectRunnerStream: 'managed-chrome:select-runner-stream',
   setViewport: 'managed-chrome:set-viewport',
   mouseMove: 'managed-chrome:mouse-move',
   mouseClick: 'managed-chrome:mouse-click',

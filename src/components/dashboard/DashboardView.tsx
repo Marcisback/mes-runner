@@ -7,7 +7,7 @@ import styles from './DashboardView.module.css'
 
 /**
  * The permanent Dashboard. Composes the header and the operational cards; each
- * card owns its own derivation from the shared engine snapshot. This component
+ * card owns its own derivation from runner snapshots. This component
  * only handles layout so no single oversized Dashboard component emerges.
  */
 export function DashboardView() {

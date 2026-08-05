@@ -2,16 +2,24 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEngine } from '../../state/engineContext'
 import { formatDiagnostics } from '../../lib/diagnostics'
 import styles from './RunnerWorkspace.module.css'
+import { WORKFLOW_LABELS, type EolRunnerSnapshot, type RunnerId } from '../../types/eolRunner'
+
+const EMPTY_SNAPSHOT: EolRunnerSnapshot = {
+  state: 'idle', mode: 'EOL', modeLabel: WORKFLOW_LABELS.EOL, assets: [],
+  currentAssetId: null, total: 0, completed: 0, skipped: 0,
+  needsReview: 0, errorMessage: null, diagnostics: [],
+}
 
 type DiagnosticFilter = 'all' | 'info' | 'warning' | 'error'
 
 /**
- * Diagnostics drawer for the runner workspace. Reads the shared engine snapshot
+ * Diagnostics drawer for one runner workspace. Reads its scoped snapshot
  * and renders sanitized, copyable session diagnostics. Copy actions reuse the
  * shared sanitizer so identifiers and local paths never leak.
  */
-export function RunnerDiagnostics() {
-  const { snapshot } = useEngine()
+export function RunnerDiagnostics({ runnerId }: { runnerId: RunnerId }) {
+  const { runners } = useEngine()
+  const snapshot = runners[runnerId]?.workflow ?? EMPTY_SNAPSHOT
   const [diagnosticFilter, setDiagnosticFilter] =
     useState<DiagnosticFilter>('all')
   const [copyStatus, setCopyStatus] = useState<string | null>(null)

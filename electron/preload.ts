@@ -11,6 +11,9 @@ import type {
   EolStartRequest,
   EolRunnerApi,
   EolRunnerSnapshot,
+  RunnerId,
+  RunnerOperationResult,
+  RunnerSnapshot,
   WorkflowMode,
 } from '../src/types/eolRunner'
 import type {
@@ -56,36 +59,37 @@ const managedChromeApi: ManagedChromeApi = {
   async getState() {
     return invokeState(MANAGED_CHROME_IPC_CHANNELS.getState)
   },
-  setViewport(viewport) {
-    sendViewport(MANAGED_CHROME_IPC_CHANNELS.setViewport, viewport)
+  async selectRunnerStream(runnerId) {
+    return Boolean(await ipcRenderer.invoke(MANAGED_CHROME_IPC_CHANNELS.selectRunnerStream, runnerId))
   },
-  mouseMove(point) {
-    sendPoint(MANAGED_CHROME_IPC_CHANNELS.mouseMove, point)
+  setViewport(runnerId, viewport) {
+    sendViewport(MANAGED_CHROME_IPC_CHANNELS.setViewport, runnerId, viewport)
   },
-  mouseClick(point) {
-    sendPoint(MANAGED_CHROME_IPC_CHANNELS.mouseClick, point)
+  mouseMove(runnerId, point) {
+    sendPoint(MANAGED_CHROME_IPC_CHANNELS.mouseMove, runnerId, point)
   },
-  mouseWheel(input) {
+  mouseClick(runnerId, point) {
+    sendPoint(MANAGED_CHROME_IPC_CHANNELS.mouseClick, runnerId, point)
+  },
+  mouseWheel(runnerId, input) {
     if (!isPoint(input) || !isFiniteNumber(input.deltaX) || !isFiniteNumber(input.deltaY)) {
       return
     }
 
     ipcRenderer.send(MANAGED_CHROME_IPC_CHANNELS.mouseWheel, {
-      x: input.x,
-      y: input.y,
-      deltaX: input.deltaX,
-      deltaY: input.deltaY,
+      runnerId,
+      value: { x: input.x, y: input.y, deltaX: input.deltaX, deltaY: input.deltaY },
     })
   },
-  keyDown(input) {
-    sendKey(MANAGED_CHROME_IPC_CHANNELS.keyDown, input)
+  keyDown(runnerId, input) {
+    sendKey(MANAGED_CHROME_IPC_CHANNELS.keyDown, runnerId, input)
   },
-  keyUp(input) {
-    sendKey(MANAGED_CHROME_IPC_CHANNELS.keyUp, input)
+  keyUp(runnerId, input) {
+    sendKey(MANAGED_CHROME_IPC_CHANNELS.keyUp, runnerId, input)
   },
-  insertText(text) {
+  insertText(runnerId, text) {
     if (typeof text === 'string' && text.length > 0 && text.length <= 128) {
-      ipcRenderer.send(MANAGED_CHROME_IPC_CHANNELS.insertText, text)
+      ipcRenderer.send(MANAGED_CHROME_IPC_CHANNELS.insertText, { runnerId, value: text })
     }
   },
   onStateChanged(listener) {
@@ -147,30 +151,46 @@ const managedChromeApi: ManagedChromeApi = {
 contextBridge.exposeInMainWorld('managedChrome', managedChromeApi)
 
 const eolRunnerApi: EolRunnerApi = {
-  async startEol(request) {
-    return invokeEolSnapshot(
-      EOL_RUNNER_IPC_CHANNELS.start,
-      parseEolStartRequest(request),
-    )
+  async createRunner() {
+    return invokeRunnerResult(EOL_RUNNER_IPC_CHANNELS.create)
   },
-  async pauseEol() {
-    return invokeEolSnapshot(EOL_RUNNER_IPC_CHANNELS.pause)
+  async closeRunner(runnerId) {
+    const result: unknown = await ipcRenderer.invoke(EOL_RUNNER_IPC_CHANNELS.close, runnerId)
+    if (isRecord(result) && result.ok === true && result.value === runnerId) {
+      return { ok: true, value: runnerId }
+    }
+    return parseRunnerError(result)
   },
-  async resumeEol() {
-    return invokeEolSnapshot(EOL_RUNNER_IPC_CHANNELS.resume)
+  async listRunners() {
+    const result: unknown = await ipcRenderer.invoke(EOL_RUNNER_IPC_CHANNELS.list)
+    return Array.isArray(result)
+      ? result.map(parseRunnerSnapshot).filter((value): value is RunnerSnapshot => value !== null)
+      : []
   },
-  async stopEol() {
-    return invokeEolSnapshot(EOL_RUNNER_IPC_CHANNELS.stop)
+  async getRunner(runnerId) {
+    return invokeRunnerResult(EOL_RUNNER_IPC_CHANNELS.get, runnerId)
   },
-  async getEolSnapshot() {
-    return invokeEolSnapshot(EOL_RUNNER_IPC_CHANNELS.getSnapshot)
+  async startEol(runnerId, request) {
+    return invokeRunnerResult(EOL_RUNNER_IPC_CHANNELS.start, {
+      runnerId,
+      request: parseEolStartRequest(request),
+    })
+  },
+  async pauseEol(runnerId) {
+    return invokeRunnerResult(EOL_RUNNER_IPC_CHANNELS.pause, { runnerId })
+  },
+  async resumeEol(runnerId) {
+    return invokeRunnerResult(EOL_RUNNER_IPC_CHANNELS.resume, { runnerId })
+  },
+  async stopEol(runnerId) {
+    return invokeRunnerResult(EOL_RUNNER_IPC_CHANNELS.stop, { runnerId })
   },
   onEolSnapshotChanged(listener) {
     const wrappedListener = (
       _event: IpcRendererEvent,
       payload: unknown,
     ): void => {
-      const snapshot = parseEolSnapshot(payload)
+      const snapshot = parseRunnerSnapshot(payload)
 
       if (snapshot !== null) {
         listener(snapshot)
@@ -182,6 +202,13 @@ const eolRunnerApi: EolRunnerApi = {
     return () => {
       ipcRenderer.off(EOL_RUNNER_IPC_CHANNELS.snapshotChanged, wrappedListener)
     }
+  },
+  onRunnerRemoved(listener) {
+    const wrappedListener = (_event: IpcRendererEvent, payload: unknown): void => {
+      if (isRunnerId(payload)) listener(payload)
+    }
+    ipcRenderer.on(EOL_RUNNER_IPC_CHANNELS.removed, wrappedListener)
+    return () => ipcRenderer.off(EOL_RUNNER_IPC_CHANNELS.removed, wrappedListener)
   },
 }
 
@@ -322,10 +349,13 @@ function parseManagedChromeFrame(
 ): ManagedChromeFrame | null {
   if (
     !isRecord(payload) ||
+    !isRunnerId(payload.runnerId) ||
     typeof payload.generation !== 'number' ||
+    typeof payload.streamGeneration !== 'number' ||
     typeof payload.frameId !== 'number' ||
     !(payload.data instanceof ArrayBuffer) ||
     !Number.isFinite(payload.generation) ||
+    !Number.isFinite(payload.streamGeneration) ||
     !Number.isFinite(payload.frameId)
   ) {
     return null
@@ -341,7 +371,9 @@ function parseManagedChromeFrame(
   }
 
   return {
+    runnerId: payload.runnerId,
     generation: payload.generation,
+    streamGeneration: payload.streamGeneration,
     frameId: payload.frameId,
     mimeType: payload.mimeType,
     data: payload.data,
@@ -382,12 +414,13 @@ function isPoint(value: unknown): value is { x: number; y: number } {
 
 function sendViewport(
   channel: typeof MANAGED_CHROME_IPC_CHANNELS.setViewport,
+  runnerId: RunnerId,
   viewport: ManagedChromeViewport,
 ): void {
   const parsedViewport = parseViewport(viewport)
 
   if (parsedViewport !== null) {
-    ipcRenderer.send(channel, parsedViewport)
+    ipcRenderer.send(channel, { runnerId, value: parsedViewport })
   }
 }
 
@@ -395,10 +428,11 @@ function sendPoint(
   channel:
     | typeof MANAGED_CHROME_IPC_CHANNELS.mouseMove
     | typeof MANAGED_CHROME_IPC_CHANNELS.mouseClick,
+  runnerId: RunnerId,
   point: unknown,
 ): void {
   if (isPoint(point)) {
-    ipcRenderer.send(channel, { x: point.x, y: point.y })
+    ipcRenderer.send(channel, { runnerId, value: { x: point.x, y: point.y } })
   }
 }
 
@@ -406,6 +440,7 @@ function sendKey(
   channel:
     | typeof MANAGED_CHROME_IPC_CHANNELS.keyDown
     | typeof MANAGED_CHROME_IPC_CHANNELS.keyUp,
+  runnerId: RunnerId,
   input: unknown,
 ): void {
   if (!isRecord(input) || typeof input.key !== 'string') {
@@ -415,7 +450,7 @@ function sendKey(
   const key = input.key.trim()
 
   if (key.length > 0 && key.length <= 40) {
-    ipcRenderer.send(channel, { key })
+    ipcRenderer.send(channel, { runnerId, value: { key } })
   }
 }
 
@@ -441,29 +476,53 @@ function isLifecycleState(
   )
 }
 
-async function invokeEolSnapshot(
-  channel:
-    | typeof EOL_RUNNER_IPC_CHANNELS.start
-    | typeof EOL_RUNNER_IPC_CHANNELS.pause
-    | typeof EOL_RUNNER_IPC_CHANNELS.resume
-    | typeof EOL_RUNNER_IPC_CHANNELS.stop
-    | typeof EOL_RUNNER_IPC_CHANNELS.getSnapshot,
+async function invokeRunnerResult(
+  channel: string,
   payload?: unknown,
-): Promise<EolRunnerSnapshot> {
+): Promise<RunnerOperationResult<RunnerSnapshot>> {
   const result: unknown = await ipcRenderer.invoke(channel, payload)
-  return parseEolSnapshot(result) ?? {
-    state: 'error',
-    mode: 'EOL',
-    modeLabel: 'EOL',
-    assets: [],
-    currentAssetId: null,
-    total: 0,
-    completed: 0,
-    skipped: 0,
-    needsReview: 0,
-    errorMessage: 'EOL runner returned an invalid snapshot.',
-    diagnostics: [],
+  if (isRecord(result) && result.ok === true) {
+    const snapshot = parseRunnerSnapshot(result.value)
+    if (snapshot !== null) return { ok: true, value: snapshot }
   }
+  return parseRunnerError(result)
+}
+
+function parseRunnerError<T>(result: unknown): RunnerOperationResult<T> {
+  if (
+    isRecord(result) &&
+    result.ok === false &&
+    isRecord(result.error) &&
+    (result.error.code === 'capacity-reached' ||
+      result.error.code === 'not-found' ||
+      result.error.code === 'creation-failed') &&
+    typeof result.error.message === 'string'
+  ) {
+    return result as RunnerOperationResult<T>
+  }
+  return { ok: false, error: { code: 'creation-failed', message: 'Runner returned an invalid response.' } }
+}
+
+function parseRunnerSnapshot(payload: unknown): RunnerSnapshot | null {
+  if (
+    !isRecord(payload) ||
+    !isRunnerId(payload.runnerId) ||
+    (payload.slot !== 1 && payload.slot !== 2 && payload.slot !== 3) ||
+    typeof payload.label !== 'string' ||
+    !isFiniteNonNegativeNumber(payload.pageGeneration)
+  ) return null
+  const workflow = parseEolSnapshot(payload.workflow)
+  return workflow === null ? null : {
+    runnerId: payload.runnerId,
+    slot: payload.slot,
+    label: payload.label,
+    pageGeneration: payload.pageGeneration,
+    workflow,
+  }
+}
+
+function isRunnerId(value: unknown): value is RunnerId {
+  return value === 'runner-1' || value === 'runner-2' || value === 'runner-3'
 }
 
 function parseEolSnapshot(payload: unknown): EolRunnerSnapshot | null {

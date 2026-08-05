@@ -19,9 +19,13 @@ const RECENT_LIMIT = 3
  * the shared workspace navigation state — no separate navigation logic.
  */
 export function RecentActivityCard() {
-  const { snapshot } = useEngine()
+  const { runners } = useEngine()
   const { openLogs } = useWorkspace()
-  const items = deriveRecentActivity(snapshot, RECENT_LIMIT)
+  const items = Object.values(runners)
+    .filter((runner) => runner !== undefined)
+    .flatMap((runner) => deriveRecentActivity(runner.workflow, RECENT_LIMIT))
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+    .slice(0, RECENT_LIMIT)
 
   return (
     <Card

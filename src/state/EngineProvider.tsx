@@ -1,20 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { EolRunnerSnapshot } from '../types/eolRunner'
-import { WORKFLOW_LABELS } from '../types/eolRunner'
+import type { RunnerId, RunnerSnapshot } from '../types/eolRunner'
 import type { ManagedChromeState } from '../types/managedChrome'
 import { EngineContext, type EngineContextValue } from './engineContext'
-
-/**
- * Owns the single subscriptions to the singleton automation engine
- * (`window.eolRunner`) and managed Chrome lifecycle (`window.managedChrome`
- * state). Mounted once at the application root, it broadcasts the shared engine
- * snapshot and Chrome state to every view — the Dashboard, workspace tabs, the
- * status bar, and the runner workspace — so no view ever opens a duplicate
- * subscription, and switching tabs never re-subscribes or resets engine state.
- *
- * Frame streaming (`onFrame`) is intentionally NOT handled here; it stays with
- * the single mounted stream surface that owns the drawing canvas.
- */
 
 const INITIAL_CHROME_STATE: ManagedChromeState = {
   lifecycle: 'stopped',
@@ -23,53 +10,39 @@ const INITIAL_CHROME_STATE: ManagedChromeState = {
   viewport: { width: 1600, height: 1000 },
 }
 
-const INITIAL_SNAPSHOT: EolRunnerSnapshot = {
-  state: 'idle',
-  mode: 'EOL',
-  modeLabel: WORKFLOW_LABELS.EOL,
-  assets: [],
-  currentAssetId: null,
-  total: 0,
-  completed: 0,
-  skipped: 0,
-  needsReview: 0,
-  errorMessage: null,
-  diagnostics: [],
-}
-
 export function EngineProvider({ children }: { children: ReactNode }) {
-  const [snapshot, setSnapshot] = useState<EolRunnerSnapshot>(INITIAL_SNAPSHOT)
-  const [chromeState, setChromeState] =
-    useState<ManagedChromeState>(INITIAL_CHROME_STATE)
+  const [runners, setRunners] = useState<Partial<Record<RunnerId, RunnerSnapshot>>>({})
+  const [chromeState, setChromeState] = useState(INITIAL_CHROME_STATE)
 
   useEffect(() => {
     let mounted = true
-
-    window.eolRunner.getEolSnapshot().then((current) => {
-      if (mounted) {
-        setSnapshot(current)
-      }
+    void window.eolRunner.listRunners().then((snapshots) => {
+      if (!mounted) return
+      setRunners(Object.fromEntries(snapshots.map((snapshot) => [snapshot.runnerId, snapshot])))
     })
-
-    const unsubscribe = window.eolRunner.onEolSnapshotChanged(setSnapshot)
-
+    const unsubscribeUpdated = window.eolRunner.onEolSnapshotChanged((snapshot) => {
+      setRunners((current) => ({ ...current, [snapshot.runnerId]: snapshot }))
+    })
+    const unsubscribeRemoved = window.eolRunner.onRunnerRemoved((runnerId) => {
+      setRunners((current) => {
+        const next = { ...current }
+        delete next[runnerId]
+        return next
+      })
+    })
     return () => {
       mounted = false
-      unsubscribe()
+      unsubscribeUpdated()
+      unsubscribeRemoved()
     }
   }, [])
 
   useEffect(() => {
     let mounted = true
-
-    window.managedChrome.getState().then((current) => {
-      if (mounted) {
-        setChromeState(current)
-      }
+    void window.managedChrome.getState().then((state) => {
+      if (mounted) setChromeState(state)
     })
-
     const unsubscribe = window.managedChrome.onStateChanged(setChromeState)
-
     return () => {
       mounted = false
       unsubscribe()
@@ -77,11 +50,8 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<EngineContextValue>(
-    () => ({ snapshot, chromeState }),
-    [snapshot, chromeState],
+    () => ({ runners, chromeState }),
+    [runners, chromeState],
   )
-
-  return (
-    <EngineContext.Provider value={value}>{children}</EngineContext.Provider>
-  )
+  return <EngineContext.Provider value={value}>{children}</EngineContext.Provider>
 }

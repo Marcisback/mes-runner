@@ -25,6 +25,7 @@ import type {
 } from '../../types/managedChrome'
 import { DiagnosticsIcon, MaximizeIcon, StreamOfflineIcon } from '../icons'
 import styles from './RunnerWorkspace.module.css'
+import type { RunnerId } from '../../types/eolRunner'
 
 /**
  * The live MES browser stream. Owns the drawing canvas, the single frame
@@ -44,7 +45,7 @@ const AUTOMATION_VIEWPORT: ManagedChromeViewport = { width: 1600, height: 1000 }
 type StreamDisplayMode = 'fit-page' | 'fit-width' | 'actual-size'
 
 interface DrawnFrame {
-  generation: number
+  streamGeneration: number
   viewport: ManagedChromeViewport
 }
 
@@ -55,6 +56,7 @@ interface PendingWheel {
 }
 
 interface MesStreamSurfaceProps {
+  runnerId: RunnerId
   inspectorCollapsed: boolean
   diagnosticsOpen: boolean
   onToggleCollapsed(): void
@@ -62,6 +64,7 @@ interface MesStreamSurfaceProps {
 }
 
 export function MesStreamSurface({
+  runnerId,
   inspectorCollapsed,
   diagnosticsOpen,
   onToggleCollapsed,
@@ -77,7 +80,7 @@ export function MesStreamSurface({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const drawnFrameRef = useRef<DrawnFrame | null>(null)
-  const currentGenerationRef = useRef(0)
+  const currentStreamGenerationRef = useRef(-1)
   const decodingFrameRef = useRef(false)
   const pendingFrameRef = useRef<ManagedChromeFrame | null>(null)
   const pendingMouseMoveRef = useRef<ManagedChromePoint | null>(null)
@@ -106,7 +109,7 @@ export function MesStreamSurface({
       const canvas = canvasRef.current
 
       if (
-        frame.generation !== currentGenerationRef.current ||
+        frame.streamGeneration !== currentStreamGenerationRef.current ||
         frame.data.byteLength === 0
       ) {
         if (frame.data.byteLength === 0) {
@@ -131,7 +134,7 @@ export function MesStreamSurface({
         const bitmap = await createImageBitmap(blob)
 
         try {
-          if (frame.generation !== currentGenerationRef.current) {
+          if (frame.streamGeneration !== currentStreamGenerationRef.current) {
             return
           }
 
@@ -140,7 +143,7 @@ export function MesStreamSurface({
           context.clearRect(0, 0, canvas.width, canvas.height)
           context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
           drawnFrameRef.current = {
-            generation: frame.generation,
+            streamGeneration: frame.streamGeneration,
             viewport: frame.viewport,
           }
         } finally {
@@ -155,12 +158,12 @@ export function MesStreamSurface({
         canvas,
         context,
         frame,
-        () => frame.generation === currentGenerationRef.current,
+        () => frame.streamGeneration === currentStreamGenerationRef.current,
       )
 
       if (drawn) {
         drawnFrameRef.current = {
-          generation: frame.generation,
+          streamGeneration: frame.streamGeneration,
           viewport: frame.viewport,
         }
       }
@@ -194,15 +197,24 @@ export function MesStreamSurface({
 
   const queueFrame = useCallback(
     (frame: ManagedChromeFrame): void => {
-      if (frame.generation !== currentGenerationRef.current) {
+      if (frame.streamGeneration < currentStreamGenerationRef.current) {
         return
+      }
+
+      if (frame.streamGeneration > currentStreamGenerationRef.current) {
+        currentStreamGenerationRef.current = frame.streamGeneration
+        clearCanvas()
       }
 
       pendingFrameRef.current = frame
       processNextFrame()
     },
-    [processNextFrame],
+    [clearCanvas, processNextFrame],
   )
+
+  useEffect(() => {
+    void window.managedChrome.selectRunnerStream(runnerId)
+  }, [runnerId])
 
   useEffect(() => {
     const surface = surfaceRef.current
@@ -238,18 +250,15 @@ export function MesStreamSurface({
   // Track the current stream generation from shared Chrome state and clear the
   // canvas when the underlying session changes.
   useEffect(() => {
-    currentGenerationRef.current = state.generation
-
-    if (state.generation !== drawnFrameRef.current?.generation) {
-      pendingFrameRef.current = null
-      clearCanvas()
-    }
-  }, [state.generation, clearCanvas])
+    currentStreamGenerationRef.current = -1
+    pendingFrameRef.current = null
+    clearCanvas()
+  }, [state.generation, runnerId, clearCanvas])
 
   // Single frame subscription for the whole app (mounted once).
   useEffect(() => {
     const unsubscribeFrame = window.managedChrome.onFrame((frame) => {
-      queueFrame(frame)
+      if (frame.runnerId === runnerId) queueFrame(frame)
     })
 
     return () => {
@@ -263,7 +272,7 @@ export function MesStreamSurface({
       }
       clearCanvas()
     }
-  }, [clearCanvas, queueFrame])
+  }, [clearCanvas, queueFrame, runnerId])
 
   const canLaunch =
     state.lifecycle === 'stopped' ||
@@ -355,7 +364,7 @@ export function MesStreamSurface({
           pendingMouseMoveRef.current = null
 
           if (pendingPoint !== null) {
-            window.managedChrome.mouseMove(pendingPoint)
+            window.managedChrome.mouseMove(runnerId, pendingPoint)
           }
         })
       }
@@ -367,7 +376,7 @@ export function MesStreamSurface({
 
     if (point !== null) {
       event.currentTarget.focus()
-      window.managedChrome.mouseClick(point)
+      window.managedChrome.mouseClick(runnerId, point)
     }
   }
 
@@ -391,7 +400,7 @@ export function MesStreamSurface({
           pendingWheelRef.current = null
 
           if (wheel !== null) {
-            window.managedChrome.mouseWheel({
+            window.managedChrome.mouseWheel(runnerId, {
               ...wheel.point,
               deltaX: wheel.deltaX,
               deltaY: wheel.deltaY,
@@ -409,12 +418,12 @@ export function MesStreamSurface({
 
     if (event.key.length === 1) {
       event.preventDefault()
-      window.managedChrome.insertText(event.key)
+      window.managedChrome.insertText(runnerId, event.key)
       return
     }
 
     event.preventDefault()
-    window.managedChrome.keyDown({ key: event.key })
+    window.managedChrome.keyDown(runnerId, { key: event.key })
   }
 
   function handleKeyUp(event: KeyboardEvent<HTMLCanvasElement>): void {
@@ -423,7 +432,7 @@ export function MesStreamSurface({
     }
 
     event.preventDefault()
-    window.managedChrome.keyUp({ key: event.key })
+    window.managedChrome.keyUp(runnerId, { key: event.key })
   }
 
   return (

@@ -28,7 +28,50 @@ test('first launch creates the database and repeated migration is idempotent', a
   assert.equal(reopened.getHealth().available, true)
   await reopened.close()
   const version = await queryOne(file, 'PRAGMA user_version')
-  assert.equal(version.user_version, 1)
+  assert.equal(version.user_version, 2)
+})
+
+test('version 1 history migrates additively and remains readable', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'mes-runner-history-v1-'))
+  const file = path.join(directory, 'history.sqlite')
+  const database = new sqlite3.Database(file)
+  await new Promise<void>((resolve, reject) => {
+    database.exec(`
+      CREATE TABLE runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE TABLE asset_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES runs(id),
+        asset_id TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        reason TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT NOT NULL,
+        UNIQUE (run_id, asset_id)
+      );
+      PRAGMA user_version = 1;
+    `, (error) => error === null ? resolve() : reject(error))
+  })
+  await new Promise<void>((resolve) => database.close(() => resolve()))
+  const store = new LocalHistoryStore(file)
+  await store.initialize()
+  t.after(async () => {
+    await store.close()
+    await rm(directory, { recursive: true, force: true })
+  })
+  assert.equal(store.getHealth().available, true)
+  const runId = await store.createRun('MRI_FAIL', '2026-08-05T10:00:00.000Z', 'Runner 3')
+  assert.ok(runId !== null)
+  assert.deepEqual(
+    await queryOne(file, 'SELECT runner_label FROM runs WHERE id = ?', [runId]),
+    { runner_label: 'Runner 3' },
+  )
 })
 
 test('creates and finalizes a run', async (t) => {
@@ -38,6 +81,20 @@ test('creates and finalizes a run', async (t) => {
   assert.equal(await store.finalizeRun(id, 'completed', '2026-08-05T10:10:00.000Z'), true)
   const row = await queryOne(file, 'SELECT status, finished_at FROM runs WHERE id = ?', [id])
   assert.deepEqual(row, { status: 'completed', finished_at: '2026-08-05T10:10:00.000Z' })
+})
+
+test('attributes concurrent runs to their owning runner label', async (t) => {
+  const { store, file } = await fixture(t)
+  const [first, second] = await Promise.all([
+    store.createRun('MRI', '2026-08-05T10:00:00.000Z', 'Runner 1'),
+    store.createRun('EOL', '2026-08-05T10:00:00.000Z', 'Runner 2'),
+  ])
+  assert.ok(first !== null && second !== null)
+  const rows = await queryAll(file, 'SELECT mode, runner_label FROM runs ORDER BY id')
+  assert.deepEqual(rows, [
+    { mode: 'MRI', runner_label: 'Runner 1' },
+    { mode: 'EOL', runner_label: 'Runner 2' },
+  ])
 })
 
 test('persists completed and needs-review results but duplicate finalization is idempotent', async (t) => {
@@ -129,3 +186,13 @@ function queryOne(file: string, sql: string, params: unknown[] = []): Promise<Re
   })
 }
 
+function queryAll(file: string, sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
+  return new Promise((resolve, reject) => {
+    const database = new sqlite3.Database(file)
+    database.all(sql, params, (error, rows: Record<string, unknown>[]) => {
+      database.close()
+      if (error === null) resolve(rows)
+      else reject(error)
+    })
+  })
+}

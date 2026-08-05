@@ -24,7 +24,9 @@ export interface ManagedChromeViewport {
 }
 
 export interface ManagedChromeFrame {
+  runnerId: import('./eolRunner').RunnerId
   generation: number
+  streamGeneration: number
   frameId: number
   mimeType: 'image/jpeg' | 'image/png'
   data: ArrayBuffer
@@ -52,13 +54,14 @@ export interface ManagedChromeApi {
   cancelAuthentication(): Promise<ManagedChromeState>
   stop(): Promise<ManagedChromeState>
   getState(): Promise<ManagedChromeState>
-  setViewport(viewport: ManagedChromeViewport): void
-  mouseMove(point: ManagedChromePoint): void
-  mouseClick(point: ManagedChromePoint): void
-  mouseWheel(input: ManagedChromeWheelInput): void
-  keyDown(input: ManagedChromeKeyInput): void
-  keyUp(input: ManagedChromeKeyInput): void
-  insertText(text: string): void
+  selectRunnerStream(runnerId: import('./eolRunner').RunnerId | null): Promise<boolean>
+  setViewport(runnerId: import('./eolRunner').RunnerId, viewport: ManagedChromeViewport): void
+  mouseMove(runnerId: import('./eolRunner').RunnerId, point: ManagedChromePoint): void
+  mouseClick(runnerId: import('./eolRunner').RunnerId, point: ManagedChromePoint): void
+  mouseWheel(runnerId: import('./eolRunner').RunnerId, input: ManagedChromeWheelInput): void
+  keyDown(runnerId: import('./eolRunner').RunnerId, input: ManagedChromeKeyInput): void
+  keyUp(runnerId: import('./eolRunner').RunnerId, input: ManagedChromeKeyInput): void
+  insertText(runnerId: import('./eolRunner').RunnerId, text: string): void
   onStateChanged(listener: (state: ManagedChromeState) => void): () => void
   onFrame(listener: (frame: ManagedChromeFrame) => void): () => void
 }

@@ -9,14 +9,13 @@ import styles from './DashboardHeader.module.css'
  * the Create Runner action and global system-status pill on the right.
  */
 export function DashboardHeader() {
-  const { snapshot, chromeState } = useEngine()
-  const { createRunner, runners } = useWorkspace()
+  const { runners: snapshots, chromeState } = useEngine()
+  const { createRunner, runners, creationPending, creationError } = useWorkspace()
 
-  const runnerExists = runners.length > 0
-  const actionLabel = runnerExists ? 'Open Runner' : 'Create Runner'
+  const atCapacity = runners.length >= 3
 
   const attention =
-    snapshot.state === 'error' ||
+    Object.values(snapshots).some((runner) => runner?.workflow.state === 'error') ||
     chromeState.lifecycle === 'error' ||
     chromeState.lifecycle === 'compliance-blocked'
 
@@ -43,16 +42,15 @@ export function DashboardHeader() {
         <button
           type="button"
           className={styles.createButton}
-          onClick={() => createRunner()}
-          aria-label={
-            runnerExists
-              ? 'Open the existing Runner 1 tab'
-              : 'Create Runner 1'
-          }
+          onClick={() => void createRunner()}
+          disabled={atCapacity || creationPending}
+          aria-label="Create runner"
+          title={atCapacity ? 'Maximum of three simultaneous runners.' : undefined}
         >
           <PlusCircleIcon size={18} />
-          {actionLabel}
+          {creationPending ? 'Creating…' : 'Create Runner'}
         </button>
+        {creationError !== null && <span role="status">{creationError}</span>}
 
         <span
           className={`${styles.systemPill} ${

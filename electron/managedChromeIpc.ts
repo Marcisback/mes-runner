@@ -4,183 +4,176 @@ import {
   type IpcMainEvent,
   type IpcMainInvokeEvent,
 } from 'electron'
-import { EolRunner } from './eolRunner'
+import type { RunnerId } from '../src/types/eolRunner'
 import { EOL_RUNNER_IPC_CHANNELS } from './eolRunnerChannels'
-import { ManagedChromeController } from './managedChromeController'
+import type { LocalHistoryStore } from './history/historyStore'
 import { MANAGED_CHROME_IPC_CHANNELS } from './managedChromeChannels'
-import { LocalHistoryStore } from './history/historyStore'
+import { ManagedChromeController } from './managedChromeController'
+import { RunnerManager } from './runnerManager'
+import { EolRunner } from './eolRunner'
+import { isRunnerId } from './runnerManagerCore'
 
 const controllers = new Map<number, ManagedChromeController>()
-const eolRunners = new Map<number, EolRunner>()
+const runnerManagers = new Map<number, RunnerManager>()
 let registered = false
-let eolRegistered = false
 
 export function registerManagedChromeWindow(
   hostWindow: BrowserWindow,
   historyStore: LocalHistoryStore,
 ): ManagedChromeController {
   const controller = new ManagedChromeController(hostWindow)
-  const eolRunner = new EolRunner(hostWindow, controller, historyStore)
+  const manager = new RunnerManager(
+    hostWindow,
+    controller,
+    (access, label, onSnapshot) =>
+      new EolRunner(access, historyStore, label, onSnapshot),
+  )
   controllers.set(hostWindow.id, controller)
-  eolRunners.set(hostWindow.id, eolRunner)
+  runnerManagers.set(hostWindow.id, manager)
 
   hostWindow.once('close', () => {
-    void Promise.all([eolRunner.dispose(), controller.dispose()])
+    void manager.dispose().then(() => controller.dispose())
   })
-
   hostWindow.once('closed', () => {
     controllers.delete(hostWindow.id)
-    eolRunners.delete(hostWindow.id)
+    runnerManagers.delete(hostWindow.id)
   })
 
-  registerManagedChromeIpc()
-  registerEolRunnerIpc()
-
+  registerIpc()
   return controller
 }
 
-function registerManagedChromeIpc(): void {
-  if (registered) {
-    return
-  }
-
+function registerIpc(): void {
+  if (registered) return
   registered = true
 
-  ipcMain.handle(MANAGED_CHROME_IPC_CHANNELS.launch, async (event) => {
-    return getController(event)?.launch() ?? null
-  })
-
-  ipcMain.handle(MANAGED_CHROME_IPC_CHANNELS.openLoginWindow, async (event) => {
-    return getController(event)?.openLoginWindow() ?? null
-  })
-
-  ipcMain.handle(
-    MANAGED_CHROME_IPC_CHANNELS.authenticationComplete,
-    async (event) => {
-      return getController(event)?.authenticationComplete() ?? null
-    },
-  )
-
-  ipcMain.handle(
-    MANAGED_CHROME_IPC_CHANNELS.cancelAuthentication,
-    async (event) => {
-      return getController(event)?.cancelAuthentication() ?? null
-    },
-  )
-
-  ipcMain.on(
-    MANAGED_CHROME_IPC_CHANNELS.connectFramePort,
-    (event) => {
-      getController(event)?.connectFramePort()
-    },
-  )
-
-  ipcMain.on(
-    MANAGED_CHROME_IPC_CHANNELS.setViewport,
-    (event, payload: unknown) => {
-      void getController(event)?.setViewport(payload).catch(() => undefined)
-    },
-  )
-
-  ipcMain.on(
-    MANAGED_CHROME_IPC_CHANNELS.mouseMove,
-    (event, payload: unknown) => {
-      void getController(event)?.mouseMove(payload).catch(() => undefined)
-    },
-  )
-
-  ipcMain.on(
-    MANAGED_CHROME_IPC_CHANNELS.mouseClick,
-    (event, payload: unknown) => {
-      void getController(event)?.mouseClick(payload).catch(() => undefined)
-    },
-  )
-
-  ipcMain.on(
-    MANAGED_CHROME_IPC_CHANNELS.mouseWheel,
-    (event, payload: unknown) => {
-      void getController(event)?.mouseWheel(payload).catch(() => undefined)
-    },
-  )
-
-  ipcMain.on(
-    MANAGED_CHROME_IPC_CHANNELS.keyDown,
-    (event, payload: unknown) => {
-      void getController(event)?.keyDown(payload).catch(() => undefined)
-    },
-  )
-
-  ipcMain.on(
-    MANAGED_CHROME_IPC_CHANNELS.keyUp,
-    (event, payload: unknown) => {
-      void getController(event)?.keyUp(payload).catch(() => undefined)
-    },
-  )
-
-  ipcMain.on(
-    MANAGED_CHROME_IPC_CHANNELS.insertText,
-    (event, payload: unknown) => {
-      void getController(event)?.insertText(payload).catch(() => undefined)
-    },
-  )
-
-  ipcMain.handle(MANAGED_CHROME_IPC_CHANNELS.getState, (event) => {
-    return getController(event)?.getState() ?? null
-  })
-
+  ipcMain.handle(MANAGED_CHROME_IPC_CHANNELS.launch, (event) =>
+    getController(event)?.launch() ?? null)
+  ipcMain.handle(MANAGED_CHROME_IPC_CHANNELS.openLoginWindow, (event) =>
+    getController(event)?.openLoginWindow() ?? null)
+  ipcMain.handle(MANAGED_CHROME_IPC_CHANNELS.authenticationComplete, async (event) =>
+    getController(event)?.authenticationComplete() ?? null)
+  ipcMain.handle(MANAGED_CHROME_IPC_CHANNELS.cancelAuthentication, (event) =>
+    getController(event)?.cancelAuthentication() ?? null)
+  ipcMain.handle(MANAGED_CHROME_IPC_CHANNELS.getState, (event) =>
+    getController(event)?.getState() ?? null)
   ipcMain.handle(MANAGED_CHROME_IPC_CHANNELS.stop, async (event) => {
+    await getRunnerManager(event)?.closeAll()
     return getController(event)?.stop() ?? null
   })
+  ipcMain.handle(
+    MANAGED_CHROME_IPC_CHANNELS.selectRunnerStream,
+    (event, payload: unknown) => {
+      if (payload === null) return getRunnerManager(event)?.selectStream(null) ?? false
+      const runnerId = parseRunnerId(payload)
+      return runnerId === null
+        ? false
+        : getRunnerManager(event)?.selectStream(runnerId) ?? false
+    },
+  )
+
+  ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.connectFramePort, (event) => {
+    getController(event)?.connectFramePort()
+  })
+  ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.setViewport, (event, payload) => {
+    forwardInput(event, payload, (controller, _runnerId, value) => controller.setViewport(value))
+  })
+  ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.mouseMove, (event, payload) => {
+    forwardInput(event, payload, (controller, runnerId, value) => controller.mouseMove(runnerId, value))
+  })
+  ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.mouseClick, (event, payload) => {
+    forwardInput(event, payload, (controller, runnerId, value) => controller.mouseClick(runnerId, value))
+  })
+  ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.mouseWheel, (event, payload) => {
+    forwardInput(event, payload, (controller, runnerId, value) => controller.mouseWheel(runnerId, value))
+  })
+  ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.keyDown, (event, payload) => {
+    forwardInput(event, payload, (controller, runnerId, value) => controller.keyDown(runnerId, value))
+  })
+  ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.keyUp, (event, payload) => {
+    forwardInput(event, payload, (controller, runnerId, value) => controller.keyUp(runnerId, value))
+  })
+  ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.insertText, (event, payload) => {
+    forwardInput(event, payload, (controller, runnerId, value) => controller.insertText(runnerId, value))
+  })
+
+  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.create, (event) =>
+    getRunnerManager(event)?.create() ?? null)
+  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.close, (event, payload) => {
+    const runnerId = parseRunnerId(payload)
+    return runnerId === null ? null : getRunnerManager(event)?.close(runnerId) ?? null
+  })
+  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.list, (event) =>
+    getRunnerManager(event)?.list() ?? [])
+  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.get, (event, payload) => {
+    const runnerId = parseRunnerId(payload)
+    return runnerId === null ? null : getRunnerManager(event)?.get(runnerId) ?? null
+  })
+  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.start, (event, payload) =>
+    routeRunnerCommand(event, payload, 'start'))
+  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.pause, (event, payload) =>
+    routeRunnerCommand(event, payload, 'pause'))
+  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.resume, (event, payload) =>
+    routeRunnerCommand(event, payload, 'resume'))
+  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.stop, (event, payload) =>
+    routeRunnerCommand(event, payload, 'stop'))
 }
 
-function registerEolRunnerIpc(): void {
-  if (eolRegistered) {
-    return
-  }
-
-  eolRegistered = true
-
-  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.start, async (event, payload: unknown) => {
-    return getEolRunner(event)?.start(payload) ?? null
-  })
-
-  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.pause, async (event) => {
-    return getEolRunner(event)?.pause() ?? null
-  })
-
-  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.resume, async (event) => {
-    return getEolRunner(event)?.resume() ?? null
-  })
-
-  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.stop, async (event) => {
-    return getEolRunner(event)?.stop() ?? null
-  })
-
-  ipcMain.handle(EOL_RUNNER_IPC_CHANNELS.getSnapshot, (event) => {
-    return getEolRunner(event)?.getSnapshot() ?? null
-  })
+function routeRunnerCommand(
+  event: IpcMainInvokeEvent,
+  payload: unknown,
+  operation: 'start' | 'pause' | 'resume' | 'stop',
+) {
+  if (!isRecord(payload)) return null
+  const runnerId = parseRunnerId(payload.runnerId)
+  const manager = getRunnerManager(event)
+  if (runnerId === null || manager === null) return null
+  return operation === 'start'
+    ? manager.start(runnerId, payload.request)
+    : manager[operation](runnerId)
 }
 
-function getController(
-  event: IpcMainEvent | IpcMainInvokeEvent,
-): ManagedChromeController | null {
+function forwardInput(
+  event: IpcMainEvent,
+  payload: unknown,
+  action: (
+    controller: ManagedChromeController,
+    runnerId: RunnerId,
+    value: unknown,
+  ) => Promise<void>,
+): void {
+  const scoped = parseRunnerPayload(payload)
+  const controller = getController(event)
+  const manager = getRunnerManager(event)
+  if (
+    scoped === null ||
+    controller === null ||
+    manager === null ||
+    !manager.has(scoped.runnerId)
+  ) return
+  void action(controller, scoped.runnerId, scoped.value).catch(() => undefined)
+}
+
+function parseRunnerPayload(value: unknown): { runnerId: RunnerId; value: unknown } | null {
+  if (!isRecord(value)) return null
+  const runnerId = parseRunnerId(value.runnerId)
+  return runnerId === null ? null : { runnerId, value: value.value }
+}
+
+function parseRunnerId(value: unknown): RunnerId | null {
+  return isRunnerId(value) ? value : null
+}
+
+function getController(event: IpcMainEvent | IpcMainInvokeEvent): ManagedChromeController | null {
   const hostWindow = BrowserWindow.fromWebContents(event.sender)
-
-  if (hostWindow === null) {
-    return null
-  }
-
-  return controllers.get(hostWindow.id) ?? null
+  return hostWindow === null ? null : controllers.get(hostWindow.id) ?? null
 }
 
-function getEolRunner(
-  event: IpcMainEvent | IpcMainInvokeEvent,
-): EolRunner | null {
+function getRunnerManager(event: IpcMainEvent | IpcMainInvokeEvent): RunnerManager | null {
   const hostWindow = BrowserWindow.fromWebContents(event.sender)
+  return hostWindow === null ? null : runnerManagers.get(hostWindow.id) ?? null
+}
 
-  if (hostWindow === null) {
-    return null
-  }
-
-  return eolRunners.get(hostWindow.id) ?? null
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }

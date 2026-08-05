@@ -14,6 +14,9 @@ import {
 import type {
   EolRunnerSnapshot,
   RepairOutcome,
+  RunnerId,
+  RunnerOperationResult,
+  RunnerSnapshot,
   WorkflowMode,
 } from '../../types/eolRunner'
 import { WORKFLOW_LABELS } from '../../types/eolRunner'
@@ -22,9 +25,14 @@ import { ResultAccordion } from './ResultAccordion'
 import styles from './RunnerWorkspace.module.css'
 
 const WORKFLOW_MODES: WorkflowMode[] = ['EOL', 'MRI', 'MRI_FAIL', 'REPAIR']
+const EMPTY_SNAPSHOT: EolRunnerSnapshot = {
+  state: 'idle', mode: 'EOL', modeLabel: WORKFLOW_LABELS.EOL, assets: [],
+  currentAssetId: null, total: 0, completed: 0, skipped: 0,
+  needsReview: 0, errorMessage: null, diagnostics: [],
+}
 
 interface RunnerInspectorProps {
-  runnerId: string
+  runnerId: RunnerId
   runnerName: string
   onCollapse(): void
 }
@@ -44,13 +52,10 @@ export function RunnerInspector({
   runnerName,
   onCollapse,
 }: RunnerInspectorProps) {
-  const { snapshot, chromeState } = useEngine()
+  const { runners, chromeState } = useEngine()
   const {
     runnerConfigs,
     updateRunnerConfig,
-    engineOwnerId,
-    claimEngine,
-    getRunnerName,
   } = useWorkspace()
   const [pendingEolAction, setPendingEolAction] = useState<string | null>(null)
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
@@ -58,13 +63,10 @@ export function RunnerInspector({
 
   const config = runnerConfigs[runnerId]
 
+  const snapshot = runners[runnerId]?.workflow ?? EMPTY_SNAPSHOT
   const engineActive = isEngineActive(snapshot)
-  const isOwner = engineOwnerId === runnerId
-  const someoneElseOwns =
-    engineActive && engineOwnerId !== null && engineOwnerId !== runnerId
-  const ownerName = engineOwnerId !== null ? getRunnerName(engineOwnerId) : null
-  const configLocked = isOwner && engineActive
-  const runnerState = isOwner ? snapshot.state : 'idle'
+  const configLocked = engineActive
+  const runnerState = snapshot.state
 
   const status = deriveInspectorStatus(
     snapshot.state,
@@ -95,7 +97,7 @@ export function RunnerInspector({
   const startDisabledReason = getStartDisabledReason({
     assetCount: parsedAssetCount,
     streamReady: chromeState.lifecycle === 'streaming',
-    engineBusyElsewhere: someoneElseOwns,
+    engineBusyElsewhere: false,
     pending: pendingEolAction !== null,
   })
 
@@ -105,7 +107,7 @@ export function RunnerInspector({
 
   async function runEolAction(
     actionName: string,
-    action: () => Promise<EolRunnerSnapshot>,
+    action: () => Promise<RunnerOperationResult<RunnerSnapshot>>,
   ): Promise<void> {
     if (pendingEolAction !== null) {
       return
@@ -133,10 +135,8 @@ export function RunnerInspector({
       return
     }
 
-    claimEngine(runnerId)
-
     void runEolAction('start', () =>
-      window.eolRunner.startEol({
+      window.eolRunner.startEol(runnerId, {
         assetsText: config.assetsText,
         mode: config.mode,
         repairOutcome: config.repairOutcome,
@@ -182,13 +182,6 @@ export function RunnerInspector({
       </header>
 
       <div className={styles.inspectorBody}>
-        {someoneElseOwns && (
-          <p className={styles.ownershipNotice} role="status">
-            {ownerName ?? 'Another runner'} is currently using the automation
-            engine. Only one runner can run at a time.
-          </p>
-        )}
-
         {/* ---- Configuration ---- */}
         <section className={styles.section} aria-labelledby={`${runnerId}-cfg`}>
           <h3 id={`${runnerId}-cfg`} className={styles.sectionLabel}>
@@ -328,7 +321,7 @@ export function RunnerInspector({
                   className={styles.secondaryButton}
                   disabled={pendingEolAction !== null}
                   onClick={() =>
-                    void runEolAction('pause', () => window.eolRunner.pauseEol())
+                    void runEolAction('pause', () => window.eolRunner.pauseEol(runnerId))
                   }
                 >
                   Pause
@@ -341,7 +334,7 @@ export function RunnerInspector({
                   disabled={pendingEolAction !== null}
                   onClick={() =>
                     void runEolAction('resume', () =>
-                      window.eolRunner.resumeEol(),
+                      window.eolRunner.resumeEol(runnerId),
                     )
                   }
                 >
@@ -356,7 +349,7 @@ export function RunnerInspector({
                     pendingEolAction !== null || runnerState === 'stopping'
                   }
                   onClick={() =>
-                    void runEolAction('stop', () => window.eolRunner.stopEol())
+                    void runEolAction('stop', () => window.eolRunner.stopEol(runnerId))
                   }
                 >
                   {runnerState === 'stopping' ? 'Stopping…' : 'Stop Safely'}
@@ -365,7 +358,7 @@ export function RunnerInspector({
             </div>
           )}
 
-          {isOwner && snapshot.errorMessage !== null && (
+          {snapshot.errorMessage !== null && (
             <p className={styles.runnerError}>{snapshot.errorMessage}</p>
           )}
         </section>

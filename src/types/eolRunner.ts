@@ -4,6 +4,9 @@ export type WorkflowMode =
   | 'MRI_FAIL'
   | 'REPAIR'
 
+export type RunnerId = 'runner-1' | 'runner-2' | 'runner-3'
+export type RunnerSlot = 1 | 2 | 3
+
 export type RepairOutcome = 'confirmed' | 'failed'
 
 export type EolRunnerState =
@@ -77,15 +80,36 @@ export interface EolRunnerSnapshot {
   diagnostics: RunnerDiagnosticEvent[]
 }
 
+export interface RunnerSnapshot {
+  runnerId: RunnerId
+  slot: RunnerSlot
+  label: string
+  pageGeneration: number
+  workflow: EolRunnerSnapshot
+}
+
+export type RunnerCapacityError = {
+  code: 'capacity-reached'
+  message: string
+}
+
+export type RunnerOperationResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: RunnerCapacityError | { code: 'not-found' | 'creation-failed'; message: string } }
+
 export interface EolRunnerApi {
-  startEol(request: EolStartRequest): Promise<EolRunnerSnapshot>
-  pauseEol(): Promise<EolRunnerSnapshot>
-  resumeEol(): Promise<EolRunnerSnapshot>
-  stopEol(): Promise<EolRunnerSnapshot>
-  getEolSnapshot(): Promise<EolRunnerSnapshot>
+  createRunner(): Promise<RunnerOperationResult<RunnerSnapshot>>
+  closeRunner(runnerId: RunnerId): Promise<RunnerOperationResult<RunnerId>>
+  listRunners(): Promise<RunnerSnapshot[]>
+  getRunner(runnerId: RunnerId): Promise<RunnerOperationResult<RunnerSnapshot>>
+  startEol(runnerId: RunnerId, request: EolStartRequest): Promise<RunnerOperationResult<RunnerSnapshot>>
+  pauseEol(runnerId: RunnerId): Promise<RunnerOperationResult<RunnerSnapshot>>
+  resumeEol(runnerId: RunnerId): Promise<RunnerOperationResult<RunnerSnapshot>>
+  stopEol(runnerId: RunnerId): Promise<RunnerOperationResult<RunnerSnapshot>>
   onEolSnapshotChanged(
-    listener: (snapshot: EolRunnerSnapshot) => void,
+    listener: (snapshot: RunnerSnapshot) => void,
   ): () => void
+  onRunnerRemoved(listener: (runnerId: RunnerId) => void): () => void
 }
 
 export const WORKFLOW_LABELS: Record<WorkflowMode, string> = {

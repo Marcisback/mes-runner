@@ -8,6 +8,7 @@ import { ActivityRail } from './ActivityRail'
 import { WorkspaceTabs } from './WorkspaceTabs'
 import { StatusBar } from './StatusBar'
 import styles from './AppShell.module.css'
+import type { RunnerId } from '../../types/eolRunner'
 
 /**
  * Top-level application shell: a narrow activity rail, a horizontal workspace
@@ -32,9 +33,9 @@ export function AppShell() {
   // Choose which runner the persistent workspace should render. When a runner
   // tab is active it is that runner; otherwise fall back to the last focused
   // runner (or any remaining runner) so the instance stays mounted while hidden.
-  let displayedRunnerId: string | null = null
+  let displayedRunnerId: RunnerId | null = null
   if (!activeIsPrimary) {
-    displayedRunnerId = activeWorkspaceId
+    displayedRunnerId = activeWorkspaceId as RunnerId
   } else if (
     lastActiveRunnerId !== null &&
     runners.some((runner) => runner.id === lastActiveRunnerId)

@@ -9,11 +9,12 @@ import { MesStreamSurface } from './MesStreamSurface'
 import { RunnerInspector } from './RunnerInspector'
 import { RunnerDiagnostics } from './RunnerDiagnostics'
 import styles from './RunnerWorkspace.module.css'
+import type { RunnerId } from '../../types/eolRunner'
 
 const RESIZE_STEP = 24
 
 interface RunnerWorkspaceProps {
-  runnerId: string
+  runnerId: RunnerId
   runnerName: string
 }
 
@@ -99,6 +100,7 @@ export function RunnerWorkspace({ runnerId, runnerName }: RunnerWorkspaceProps) 
     <section className={styles.workspace} aria-label={`${runnerName} workspace`}>
       <div ref={contentRef} className={contentClassName} style={contentStyle}>
         <MesStreamSurface
+          runnerId={runnerId}
           inspectorCollapsed={inspectorCollapsed}
           diagnosticsOpen={diagnosticsOpen}
           onToggleCollapsed={() => setInspectorCollapsed((value) => !value)}
@@ -132,7 +134,7 @@ export function RunnerWorkspace({ runnerId, runnerName }: RunnerWorkspaceProps) 
           />
         )}
 
-        {diagnosticsOpen && <RunnerDiagnostics />}
+        {diagnosticsOpen && <RunnerDiagnostics runnerId={runnerId} />}
       </div>
     </section>
   )

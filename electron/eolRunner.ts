@@ -1,9 +1,7 @@
-import { type BrowserWindow } from 'electron'
 import { type Page } from 'playwright-core'
-import { EOL_RUNNER_IPC_CHANNELS } from './eolRunnerChannels'
 import { LocalHistoryStore } from './history/historyStore'
 import { toHistoryOutcome } from './history/historyOutcome'
-import { ManagedChromeController } from './managedChromeController'
+import type { RunnerBrowserAccess } from './runnerBrowserAccess'
 import {
   AssetSkipError,
   AuthenticationRequiredError,
@@ -41,6 +39,10 @@ import {
 } from '../src/types/eolRunner'
 
 export class EolRunner {
+  private readonly managedChrome: RunnerBrowserAccess
+  private readonly historyStore: LocalHistoryStore
+  private readonly runnerLabel: string
+  private readonly onSnapshot: (snapshot: EolRunnerSnapshot) => void
   private snapshot: EolRunnerSnapshot = createEmptySnapshot()
   private runInProgress: Promise<void> | null = null
   private pauseRequested = false
@@ -53,13 +55,19 @@ export class EolRunner {
   private readonly queueHandoff = new RuntimeQueueHandoff()
   private historyRunId: number | null = null
   private historyRunFinalStatus: 'completed' | 'stopped' | 'disconnected' | 'error' = 'completed'
+  private readonly unsubscribeInvalidation: () => void
 
   constructor(
-    private readonly hostWindow: BrowserWindow,
-    private readonly managedChrome: ManagedChromeController,
-    private readonly historyStore: LocalHistoryStore,
+    managedChrome: RunnerBrowserAccess,
+    historyStore: LocalHistoryStore,
+    runnerLabel: string,
+    onSnapshot: (snapshot: EolRunnerSnapshot) => void,
   ) {
-    this.managedChrome.onAutomationSessionInvalidated((reason) => {
+    this.managedChrome = managedChrome
+    this.historyStore = historyStore
+    this.runnerLabel = runnerLabel
+    this.onSnapshot = onSnapshot
+    this.unsubscribeInvalidation = this.managedChrome.onAutomationSessionInvalidated((reason) => {
       this.clearQueueHandoff(reason)
     })
   }
@@ -69,10 +77,12 @@ export class EolRunner {
   }
 
   async dispose(): Promise<void> {
+    this.unsubscribeInvalidation()
     if (this.runInProgress !== null) {
       this.stopRequested = true
       this.historyRunFinalStatus = 'stopped'
     }
+    await this.runInProgress?.catch(() => undefined)
     await this.finalizeHistoryRun()
   }
 
@@ -125,6 +135,7 @@ export class EolRunner {
     this.historyRunId = await this.historyStore.createRun(
       request.options.mode,
       new Date().toISOString(),
+      this.runnerLabel,
     )
     if (this.historyRunId === null) {
       this.logPersistenceUnavailable('Run history could not be started.')
@@ -622,14 +633,7 @@ export class EolRunner {
   }
 
   private emitSnapshot(): void {
-    if (this.hostWindow.isDestroyed()) {
-      return
-    }
-
-    this.hostWindow.webContents.send(
-      EOL_RUNNER_IPC_CHANNELS.snapshotChanged,
-      this.snapshot,
-    )
+    this.onSnapshot(this.snapshot)
   }
 }
 

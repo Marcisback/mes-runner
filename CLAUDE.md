@@ -16,7 +16,7 @@ transitions. Final asset outcomes are persisted locally for Dashboard and
 History reporting. Persistent workflow checkpoints, restart/crash recovery,
 and auto-updating remain planned.
 
-Today the repository contains a working desktop runner, managed-Chrome browser
+Today the repository contains a working three-runner desktop host, managed-Chrome browser
 foundation, CDP screencast surface, and runtime-aware automation for the proven
 EOL and MRI workflows. See [Current Architecture](#current-architecture) for
 the precise boundary between implemented, validated, and planned behavior.
@@ -51,16 +51,20 @@ the precise boundary between implemented, validated, and planned behavior.
   organization-managed Google Chrome application with `channel: "chrome"` and
   a dedicated profile at
   `path.join(app.getPath("userData"), "managed-chrome-profile")`. Normal
-  automation is headless at a fixed 1600x1000 viewport and is displayed inside
-  Electron through main-process-owned CDP screencasting. Authentication opens a
+  automation is headless at a fixed 1600x1000 viewport. One persistent context
+  owns up to three independent runner pages. Only the selected page is displayed
+  inside Electron through main-process-owned CDP screencasting; background pages
+  continue automation without streaming. Authentication opens a
   visible managed-Chrome window for manual login and YubiKey interaction, then
-  returns to a fresh headless context. Playwright contexts, pages, CDP sessions,
+  returns to a fresh headless context and recreates retained runner pages before
+  workflows re-observe MES. Playwright contexts, pages, CDP sessions,
   process ownership, profile paths, and credentials remain outside React.
 - **Managed Chrome IPC** (`electron/managedChromeIpc.ts`,
   `electron/managedChromeChannels.ts`, `electron/preload.ts`) — typed, narrow
   APIs exposed as `window.managedChrome` and `window.eolRunner`. The renderer
-  sends lifecycle, input-forwarding, and runner intents and receives sanitized
-  snapshots and screencast frames. Raw IPC, Playwright, CDP sessions, Chrome
+  sends lifecycle and runner-scoped input/workflow intents and receives sanitized
+  runner snapshots and generation-tagged screencast frames. Runner IDs are
+  validated in the main process. Raw IPC, Playwright, CDP sessions, Chrome
   handles, cookies, credentials, profile paths, and arbitrary browser control
   are not exposed to React.
 - **Runtime MES state observer**
@@ -89,14 +93,23 @@ the precise boundary between implemented, validated, and planned behavior.
   retry within a 60-second transition deadline. Busy controls are not replayed,
   already-present Wipe/Diagnostic scans are not repeated, and MRI Fail cannot
   complete until Move-to-Repair completion is confirmed.
-- **Runner and diagnostics** (`electron/eolRunner.ts`) — executes assets
-  sequentially, supports Pause, Resume, and Stop Safely at action boundaries,
-  and keeps bounded sanitized diagnostics in memory. Runtime progress is also
-  memory-only; application restart recovery and persistent workflow checkpoints
-  are not implemented.
+- **Runner manager and diagnostics** (`electron/runnerManager.ts`,
+  `electron/eolRunner.ts`) — a typed main-process map owns at most three runner
+  sessions. Each has a distinct page, page generation, workflow engine, queue,
+  lifecycle flags, bounded diagnostics, terminal receipt, and history run ID.
+  Slots are labelled Runner 1-3 and the lowest free slot is reused. Pause,
+  Resume, Stop Safely, failure, and cleanup are runner-scoped. Runtime progress
+  remains memory-only; restart recovery and persistent workflow checkpoints are
+  not implemented.
+- **Shared authentication** — authentication belongs to the one browser
+  context. Any runner can trigger the single visible authentication flow; all
+  runner actions suspend until the headless context and retained pages are
+  restored, after which each runner re-observes independently.
 - **Local history persistence** (`electron/history/`) — main-process-owned
   SQLite storage at `path.join(app.getPath("userData"), "mes-runner.sqlite")`.
   Transactional versioned migrations create run and final asset-result records;
+  runs include a nullable stable runner label while asset results retain their
+  run foreign key;
   only completed and needs-review outcomes are stored. UTC timestamps are
   queried through local calendar boundaries. Foreign keys and WAL mode are
   enabled, writes are parameterized and idempotent, and storage failures never
@@ -105,8 +118,9 @@ the precise boundary between implemented, validated, and planned behavior.
   validates bounded date/range/filter requests and exposes only typed summaries,
   results, health, and invalidation events. SQL, database handles, and database
   paths remain in the main process.
-- **React renderer** — dashboard, runner workspace, streamed MES surface,
-  contextual runner controls, bounded diagnostics, persisted weekly Dashboard
+- **React renderer** — authoritative runner tabs and Dashboard cards sourced
+  from main-process snapshots, selected-runner workspace/stream, independent
+  contextual runner controls and diagnostics, persisted weekly Dashboard
   totals, date-oriented History, and settings presentation. Automation and
   persistence policy remain in the main process.
 - **Styling** — plain CSS + CSS Modules, driven by theme tokens in
@@ -126,10 +140,11 @@ the precise boundary between implemented, validated, and planned behavior.
   and `electron-builder` producing per-platform installers with the SQLite
   ABI-stable Node-API binary preserved without an Electron-specific rebuild and
   unpacked from ASAR.
-- **Automated validation** — Node test coverage for pure workflow policy and
-  supporting logic, strict TypeScript, ESLint, and Vite builds. Phase 1 runtime
-  awareness passes automated validation but still requires approved manual
-  testing against live MES behavior; it is not production-verified.
+- **Automated validation** — Node test coverage for pure workflow policy,
+  runner allocation/routing, persistence migration, and supporting logic,
+  strict TypeScript, ESLint, and Vite builds. Runtime awareness and multi-page
+  concurrency pass automated validation but still require approved manual
+  testing against live MES behavior; they are not production-verified.
 - **Engineering docs** — `docs/rfcs/`, `docs/decisions/`, `docs/diagrams/`.
 
 ### Planned implementation (does NOT exist yet)
@@ -143,6 +158,8 @@ implemented:
 - Verification or redesign of the Repair workflow.
 - Production approval of Phase 1 runtime state awareness after controlled live
   MES testing with approved assets.
+- Production approval of three-page concurrency and shared authentication
+  recovery after controlled live MES testing.
 - Content Security Policy.
 - Routing / multiple mounted views.
 - Auto-update via GitHub Releases.
@@ -208,7 +225,7 @@ Whenever a completed feature changes the system, update this section so future c
 | UI             | React 18 + TypeScript (strict)                      | Routing, feature views                   |
 | Build          | Vite + `vite-plugin-electron`, `electron-builder`   | GitHub Actions CI/CD                     |
 | Styling        | Plain CSS + CSS Modules + theme tokens              | —                                        |
-| Automation     | Managed Chrome, CDP screencast, typed runtime observer/reconciliation via `playwright-core` | Persistent restart recovery; verified Repair |
+| Automation     | One managed Chrome context, up to three runner pages, selected-only CDP screencast, typed runtime observer/reconciliation via `playwright-core` | Persistent restart recovery; verified Repair |
 | Persistence    | Dedicated Chrome profile; main-process SQLite final-outcome history; runtime checkpoints and diagnostics in memory | Persistent workflow checkpoints/restart recovery |
 | Quality        | Node tests, ESLint, strict TypeScript, Vite builds   | Non-production MES integration/e2e tests |
 
@@ -230,6 +247,8 @@ mes-runner/
 │   │                         # Managed Chrome IPC channel constants
 │   ├── managedChromeIpc.ts  # Typed managed Chrome IPC registration
 │   ├── eolRunner.ts         # Sequential runner and bounded diagnostics
+│   ├── runnerManager.ts     # Three-session ownership, slots, routing, cleanup
+│   ├── runnerBrowserAccess.ts # Runner-scoped page/lifecycle boundary
 │   ├── history/             # SQLite store, migrations, validation, IPC/tests
 │   ├── workflows/           # Observer, reconciliation, actions, detectors/tests
 │   ├── preload.ts          # contextBridge preload

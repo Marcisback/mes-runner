@@ -22,6 +22,8 @@ import type {
   ManagedChromeViewport,
   ManagedChromeWheelInput,
 } from '../src/types/managedChrome'
+import type { RunnerId } from '../src/types/eolRunner'
+import { isCurrentRunnerStream } from './runnerManagerCore'
 
 const MANAGED_CHROME_EXECUTABLE =
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -74,6 +76,14 @@ interface ScreencastFramePayload {
   sessionId?: unknown
 }
 
+interface RunnerPageRecord {
+  page: Page
+  pageGeneration: number
+  frameNavigatedListener: (frame: Frame) => void
+  loadListener: () => void
+  closeListener: () => void
+}
+
 export interface AutomationSessionIdentity {
   browserGeneration: number
   pageGeneration: number
@@ -96,8 +106,15 @@ export class ManagedChromeController {
   private lastFrameSentAt = 0
   private generation = 0
   private pageGeneration = 0
+  private streamGeneration = 0
+  private selectedRunnerId: RunnerId | null = null
+  private readonly desiredRunnerIds = new Set<RunnerId>()
+  private readonly runnerPages = new Map<RunnerId, RunnerPageRecord>()
   private disposed = false
-  private readonly sessionInvalidationListeners = new Set<(reason: string) => void>()
+  private readonly sessionInvalidationListeners = new Set<(
+    reason: string,
+    runnerId: RunnerId | null,
+  ) => void>()
   private readonly rendererReloadListener = (): void => {
     this.closeFramePort()
   }
@@ -113,29 +130,68 @@ export class ManagedChromeController {
     return this.state
   }
 
-  getAutomationPage(): Page | null {
+  getAutomationPage(runnerId: RunnerId): Page | null {
     if (
       this.state.lifecycle !== 'streaming' ||
       this.activeContext === null ||
-      this.activeContext.mode !== 'headless' ||
-      this.activeContext.page.isClosed()
+      this.activeContext.mode !== 'headless'
     ) {
       return null
     }
-
-    return this.activeContext.page
+    const record = this.runnerPages.get(runnerId)
+    return record !== undefined && !record.page.isClosed() ? record.page : null
   }
 
-  getAutomationSessionIdentity(): AutomationSessionIdentity | null {
-    return this.getAutomationPage() === null
+  getAutomationSessionIdentity(runnerId: RunnerId): AutomationSessionIdentity | null {
+    const record = this.runnerPages.get(runnerId)
+    return this.getAutomationPage(runnerId) === null || record === undefined
       ? null
       : {
           browserGeneration: this.generation,
-          pageGeneration: this.pageGeneration,
+          pageGeneration: record.pageGeneration,
         }
   }
 
-  onAutomationSessionInvalidated(listener: (reason: string) => void): () => void {
+  getRunnerPageGeneration(runnerId: RunnerId): number {
+    return this.runnerPages.get(runnerId)?.pageGeneration ?? 0
+  }
+
+  async createRunnerPage(runnerId: RunnerId): Promise<Page> {
+    this.desiredRunnerIds.add(runnerId)
+    if (this.activeContext === null || this.activeContext.mode !== 'headless') {
+      await this.launch()
+    }
+    const existing = this.runnerPages.get(runnerId)
+    if (existing !== undefined && !existing.page.isClosed()) return existing.page
+    return this.createRegisteredRunnerPage(runnerId)
+  }
+
+  async closeRunnerPage(runnerId: RunnerId): Promise<void> {
+    this.desiredRunnerIds.delete(runnerId)
+    if (this.selectedRunnerId === runnerId) {
+      await this.selectRunnerStream(null)
+    }
+    const record = this.runnerPages.get(runnerId)
+    if (record === undefined) return
+    this.detachRunnerPage(runnerId, record)
+    await record.page.close().catch(() => undefined)
+  }
+
+  async selectRunnerStream(runnerId: RunnerId | null): Promise<boolean> {
+    this.streamGeneration += 1
+    await this.stopScreencast()
+    this.selectedRunnerId = runnerId
+    this.clearCurrentFrame()
+    if (runnerId === null) return true
+    const page = this.getAutomationPage(runnerId)
+    if (page === null) return false
+    await this.startScreencast(this.generation, runnerId, page, this.streamGeneration)
+    return true
+  }
+
+  onAutomationSessionInvalidated(
+    listener: (reason: string, runnerId: RunnerId | null) => void,
+  ): () => void {
     this.sessionInvalidationListeners.add(listener)
     return () => this.sessionInvalidationListeners.delete(listener)
   }
@@ -203,70 +259,70 @@ export class ManagedChromeController {
     this.recreateFramePort()
   }
 
-  async mouseMove(payload: unknown): Promise<void> {
+  async mouseMove(runnerId: RunnerId, payload: unknown): Promise<void> {
     await this.runInputTask(async () => {
       const point = parsePoint(payload, this.state.viewport)
 
-      if (point === null || !this.canForwardInput()) {
+      if (point === null || !this.canForwardInput(runnerId)) {
         return
       }
 
-      await this.activeContext?.page.mouse.move(point.x, point.y)
+      await this.getSelectedPage(runnerId)?.mouse.move(point.x, point.y)
     })
   }
 
-  async mouseClick(payload: unknown): Promise<void> {
+  async mouseClick(runnerId: RunnerId, payload: unknown): Promise<void> {
     await this.runInputTask(async () => {
       const point = parsePoint(payload, this.state.viewport)
 
-      if (point === null || !this.canForwardInput()) {
+      if (point === null || !this.canForwardInput(runnerId)) {
         return
       }
 
-      await this.activeContext?.page.mouse.click(point.x, point.y, {
+      await this.getSelectedPage(runnerId)?.mouse.click(point.x, point.y, {
         button: 'left',
       })
       await this.detectAuthenticationState()
     })
   }
 
-  async mouseWheel(payload: unknown): Promise<void> {
+  async mouseWheel(runnerId: RunnerId, payload: unknown): Promise<void> {
     await this.runInputTask(async () => {
       const input = parseWheelInput(payload, this.state.viewport)
 
-      if (input === null || !this.canForwardInput()) {
+      if (input === null || !this.canForwardInput(runnerId)) {
         return
       }
 
-      await this.activeContext?.page.mouse.wheel(input.deltaX, input.deltaY)
+      await this.getSelectedPage(runnerId)?.mouse.wheel(input.deltaX, input.deltaY)
     })
   }
 
-  async keyDown(payload: unknown): Promise<void> {
+  async keyDown(runnerId: RunnerId, payload: unknown): Promise<void> {
     await this.runInputTask(async () => {
       const key = parseKeyInput(payload)
 
-      if (key === null || !this.canForwardInput()) {
+      if (key === null || !this.canForwardInput(runnerId)) {
         return
       }
 
-      await this.activeContext?.page.keyboard.down(key)
+      await this.getSelectedPage(runnerId)?.keyboard.down(key)
     })
   }
 
-  async keyUp(payload: unknown): Promise<void> {
+  async keyUp(runnerId: RunnerId, payload: unknown): Promise<void> {
     await this.runInputTask(async () => {
       const key = parseKeyInput(payload)
 
-      if (key === null || !this.canForwardInput()) {
+      if (key === null || !this.canForwardInput(runnerId)) {
         return
       }
 
-      await this.activeContext?.page.keyboard.up(key)
+      await this.getSelectedPage(runnerId)?.keyboard.up(key)
     })
   }
 
-  async insertText(payload: unknown): Promise<void> {
+  async insertText(runnerId: RunnerId, payload: unknown): Promise<void> {
     await this.runInputTask(async () => {
       if (
         typeof payload !== 'string' ||
@@ -276,11 +332,11 @@ export class ManagedChromeController {
         return
       }
 
-      if (!this.canForwardInput()) {
+      if (!this.canForwardInput(runnerId)) {
         return
       }
 
-      await this.activeContext?.page.keyboard.insertText(payload)
+      await this.getSelectedPage(runnerId)?.keyboard.insertText(payload)
     })
   }
 
@@ -364,7 +420,9 @@ export class ManagedChromeController {
       await page.setViewportSize(AUTOMATION_VIEWPORT)
       this.registerActiveContext(context, page, 'headless', generation)
 
-      this.setState('loading')
+      this.setState(
+        startingState === 'resuming-headless' ? 'resuming-headless' : 'loading',
+      )
       await page.goto(MES_URL, { waitUntil: 'domcontentloaded' })
 
       if (!this.isCurrentGeneration(generation)) {
@@ -381,8 +439,18 @@ export class ManagedChromeController {
         return this.state
       }
 
-      await this.startScreencast(generation)
-      return this.setState('streaming')
+      await this.restoreRunnerPages()
+      if (
+        this.state.lifecycle === 'authentication-required' ||
+        this.state.lifecycle === 'compliance-blocked'
+      ) {
+        return this.state
+      }
+      this.setState('streaming')
+      if (this.selectedRunnerId !== null) {
+        await this.selectRunnerStream(this.selectedRunnerId)
+      }
+      return this.state
     } catch (error: unknown) {
       await this.closeFailedContext(this.generation)
       return this.setError(getLaunchErrorMessage(error), error)
@@ -394,7 +462,7 @@ export class ManagedChromeController {
     this.setState('launching-authentication')
 
     try {
-      await this.closeActiveContext(false)
+      await this.closeActiveContext(false, true)
       await waitForProfileRelease()
       await verifyManagedChromeExecutable()
       await fs.mkdir(getProfileDirectory(), { recursive: true })
@@ -431,7 +499,7 @@ export class ManagedChromeController {
     this.setState('resuming-headless')
 
     try {
-      await this.closeActiveContext(false)
+      await this.closeActiveContext(false, true)
       await waitForProfileRelease()
       return this.launchHeadless('resuming-headless')
     } catch (error: unknown) {
@@ -476,7 +544,70 @@ export class ManagedChromeController {
     }
   }
 
-  private async startScreencast(generation: number): Promise<void> {
+  private async createRegisteredRunnerPage(runnerId: RunnerId): Promise<Page> {
+    const activeContext = this.activeContext
+    if (activeContext === null || activeContext.mode !== 'headless') {
+      throw new Error('Managed Chrome is not ready for runner creation.')
+    }
+    const page = await activeContext.context.newPage()
+    await page.setViewportSize(AUTOMATION_VIEWPORT)
+    await page.goto(MES_URL, { waitUntil: 'domcontentloaded' })
+    this.pageGeneration += 1
+    const pageGeneration = this.pageGeneration
+    const frameNavigatedListener = (frame: Frame): void => {
+      if (frame !== page.mainFrame()) return
+      const record = this.runnerPages.get(runnerId)
+      if (record !== undefined) record.pageGeneration = ++this.pageGeneration
+      this.notifyAutomationSessionInvalidated(
+        'Controlled page generation changed.',
+        runnerId,
+      )
+      void this.detectAuthenticationStateForPage(page)
+    }
+    const loadListener = (): void => {
+      void this.detectAuthenticationStateForPage(page)
+    }
+    const closeListener = (): void => {
+      const record = this.runnerPages.get(runnerId)
+      if (record === undefined || record.page !== page) return
+      this.detachRunnerPage(runnerId, record)
+      this.notifyAutomationSessionInvalidated('Runner page closed.', runnerId)
+    }
+    page.on('framenavigated', frameNavigatedListener)
+    page.on('load', loadListener)
+    page.on('close', closeListener)
+    this.runnerPages.set(runnerId, {
+      page,
+      pageGeneration,
+      frameNavigatedListener,
+      loadListener,
+      closeListener,
+    })
+    await this.detectAuthenticationStateForPage(page)
+    return page
+  }
+
+  private async restoreRunnerPages(): Promise<void> {
+    for (const runnerId of this.desiredRunnerIds) {
+      if (!this.runnerPages.has(runnerId)) {
+        await this.createRegisteredRunnerPage(runnerId)
+      }
+    }
+  }
+
+  private detachRunnerPage(runnerId: RunnerId, record: RunnerPageRecord): void {
+    record.page.off('framenavigated', record.frameNavigatedListener)
+    record.page.off('load', record.loadListener)
+    record.page.off('close', record.closeListener)
+    if (this.runnerPages.get(runnerId) === record) this.runnerPages.delete(runnerId)
+  }
+
+  private async startScreencast(
+    generation: number,
+    runnerId: RunnerId,
+    page: Page,
+    streamGeneration: number,
+  ): Promise<void> {
     const activeContext = this.activeContext
 
     if (
@@ -489,9 +620,15 @@ export class ManagedChromeController {
 
     await this.stopScreencast()
 
-    const cdpSession = await activeContext.context.newCDPSession(activeContext.page)
+    const cdpSession = await activeContext.context.newCDPSession(page)
     const frameListener = (payload: unknown): void => {
-      void this.handleScreencastFrame(payload, generation)
+      void this.handleScreencastFrame(
+        payload,
+        generation,
+        runnerId,
+        streamGeneration,
+        cdpSession,
+      )
     }
 
     cdpSession.on('Page.screencastFrame', frameListener)
@@ -546,19 +683,26 @@ export class ManagedChromeController {
   private async handleScreencastFrame(
     payload: unknown,
     generation: number,
+    runnerId: RunnerId,
+    streamGeneration: number,
+    frameSession: CDPSession,
   ): Promise<void> {
     const cdpSession = this.cdpSession
     const frame = parseScreencastFramePayload(payload)
 
     if (
       cdpSession === null ||
+      cdpSession !== frameSession ||
       frame === null ||
       !this.isCurrentGeneration(generation) ||
+      !isCurrentRunnerStream(
+        this.selectedRunnerId,
+        this.streamGeneration,
+        runnerId,
+        streamGeneration,
+      ) ||
       this.state.lifecycle !== 'streaming'
     ) {
-      if (frame !== null) {
-        await acknowledgeCdpFrame(cdpSession, frame.sessionId)
-      }
       return
     }
 
@@ -575,7 +719,9 @@ export class ManagedChromeController {
     const transferableBuffer = toExactArrayBuffer(imageBuffer)
 
     const rendererFrame: ManagedChromeFrame = {
+      runnerId,
       generation,
+      streamGeneration,
       frameId,
       mimeType: 'image/jpeg',
       data: transferableBuffer,
@@ -604,7 +750,15 @@ export class ManagedChromeController {
       return 'none'
     }
 
-    const page = activeContext.page
+    return this.detectAuthenticationStateForPage(activeContext.page)
+  }
+
+  private async detectAuthenticationStateForPage(page: Page): Promise<
+    'none' | 'authentication-required' | 'compliance-blocked'
+  > {
+    const pageIsCurrent = this.activeContext?.page === page ||
+      [...this.runnerPages.values()].some((record) => record.page === page)
+    if (!pageIsCurrent || page.isClosed()) return 'none'
 
     if (isLikelyAuthenticationUrl(page.url())) {
       this.setState('authentication-required', AUTHENTICATION_REQUIRED_MESSAGE)
@@ -647,6 +801,7 @@ export class ManagedChromeController {
 
   private async closeActiveContext(
     emitState = true,
+    preserveRunnerPages = false,
   ): Promise<ManagedChromeState> {
     const activeContext = this.activeContext
 
@@ -657,6 +812,10 @@ export class ManagedChromeController {
     }
 
     this.notifyAutomationSessionInvalidated('Controlled browser or page generation changed.')
+    for (const [runnerId, record] of this.runnerPages) {
+      this.detachRunnerPage(runnerId, record)
+    }
+    if (!preserveRunnerPages) this.desiredRunnerIds.clear()
     this.activeContext = null
     activeContext.context.off('close', activeContext.closeListener)
     activeContext.page.off('framenavigated', activeContext.frameNavigatedListener)
@@ -712,16 +871,29 @@ export class ManagedChromeController {
     await closeContextSafely(activeContext.context)
   }
 
-  private canForwardInput(): boolean {
+  private canForwardInput(runnerId: RunnerId): boolean {
     return (
       this.state.lifecycle === 'streaming' &&
       this.activeContext !== null &&
-      this.activeContext.mode === 'headless'
+      this.activeContext.mode === 'headless' &&
+      this.selectedRunnerId === runnerId &&
+      this.getAutomationPage(runnerId) !== null
     )
   }
 
-  private notifyAutomationSessionInvalidated(reason: string): void {
-    for (const listener of this.sessionInvalidationListeners) listener(reason)
+  private getSelectedPage(runnerId: RunnerId): Page | null {
+    return this.selectedRunnerId === runnerId
+      ? this.getAutomationPage(runnerId)
+      : null
+  }
+
+  private notifyAutomationSessionInvalidated(
+    reason: string,
+    runnerId: RunnerId | null = null,
+  ): void {
+    for (const listener of this.sessionInvalidationListeners) {
+      listener(reason, runnerId)
+    }
   }
 
   private setState(
@@ -765,9 +937,11 @@ export class ManagedChromeController {
   }
 
   private clearCurrentFrame(): void {
-    if (this.framePort !== null) {
+    if (this.framePort !== null && this.selectedRunnerId !== null) {
       this.framePort.postMessage({
+        runnerId: this.selectedRunnerId,
         generation: this.generation,
+        streamGeneration: this.streamGeneration,
         frameId: 0,
         mimeType: 'image/jpeg',
         data: new ArrayBuffer(0),

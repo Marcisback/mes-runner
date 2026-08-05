@@ -20,7 +20,7 @@ type OutcomeFilter = HistoryOutcome | 'all'
 const DEFAULT_HISTORY_RANGE = resolveHistoryPresetRange('this_week')
 
 export function LogsView() {
-  const { snapshot } = useEngine()
+  const { runners } = useEngine()
   const { dates, health, revision } = useHistory()
   const { logsFilterIntent } = useWorkspace()
   const [view, setView] = useState<View>('history')
@@ -79,8 +79,11 @@ export function LogsView() {
   }, [customEnd, customStart, health, mode, outcome, preset, revision, search, selectedDate])
 
   const diagnostics = useMemo(
-    () => formatDiagnostics(snapshot.diagnostics, false, snapshot.assets),
-    [snapshot.assets, snapshot.diagnostics],
+    () => Object.values(runners)
+      .filter((runner) => runner !== undefined)
+      .map((runner) => `${runner.label}\n${formatDiagnostics(runner.workflow.diagnostics, false, runner.workflow.assets)}`)
+      .join('\n\n'),
+    [runners],
   )
 
   return (
