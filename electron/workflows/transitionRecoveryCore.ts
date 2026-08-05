@@ -2,6 +2,9 @@ export const WORKFLOW_RECOVERY_LIMITS = {
   assetSubmissionEnterRetries: 2,
   startRecoveryCycles: 2,
   confirmWipeRetries: 1,
+  semanticTargetAttempts: 3,
+  semanticTargetBackoffMs: 150,
+  targetDiagnosticDedupMs: 2_000,
 } as const
 
 export type ReconciledWorkflowState =

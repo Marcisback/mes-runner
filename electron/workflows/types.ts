@@ -4,9 +4,16 @@ import type {
   RunnerDiagnosticSeverity,
   WorkflowMode,
 } from '../../src/types/eolRunner'
+import type {
+  QueueHandoffAuthorization,
+  WorkflowTerminalStage,
+} from './queueHandoffCore'
 
 export const WORKFLOW_TIMEOUTS = {
   defaultMs: 15_000,
+  passiveObservationHardMs: 1_500,
+  semanticProbeMs: 250,
+  failureDialogMountMs: 2_000,
   popupPollMs: 250,
   scopedPollMs: 150,
   stopPollMs: 100,
@@ -29,7 +36,7 @@ export const WORKFLOW_TIMEOUTS = {
 } as const
 
 export const SELECTORS = {
-  firstScanText: /Scan the asset tag|serial number to get started/i,
+  firstScanText: /^Scan the asset tag or serial number to get started$/i,
   startButtonText: /^Start$/i,
   confirmWipeText: /Confirm\s+wipe/i,
   confirmDiagnosticText: /Confirm\s+diagnostic/i,
@@ -65,6 +72,9 @@ export interface WorkflowRuntime {
 
 export interface AssetWorkflowContext extends WorkflowRuntime {
   assetId: string
+  getQueueHandoff(): QueueHandoffAuthorization | null
+  consumeQueueHandoff(): boolean
+  clearQueueHandoff(reason: string): void
 }
 
 export interface VisibleInputResult {
@@ -74,4 +84,5 @@ export interface VisibleInputResult {
 export interface CompletionSignal {
   mode: WorkflowMode
   signal: string
+  terminalStage: WorkflowTerminalStage
 }

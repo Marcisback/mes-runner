@@ -8,6 +8,7 @@ import {
   chromium,
   type BrowserContext,
   type CDPSession,
+  type Frame,
   type Page,
 } from 'playwright-core'
 import fs from 'node:fs/promises'
@@ -60,7 +61,7 @@ interface ActiveContext {
   mode: ContextMode
   generation: number
   closeListener: () => void
-  frameNavigatedListener: () => void
+  frameNavigatedListener: (frame: Frame) => void
   loadListener: () => void
 }
 
@@ -71,6 +72,11 @@ interface ScreencastFramePayload {
     deviceHeight?: unknown
   }
   sessionId?: unknown
+}
+
+export interface AutomationSessionIdentity {
+  browserGeneration: number
+  pageGeneration: number
 }
 
 export class ManagedChromeController {
@@ -89,7 +95,9 @@ export class ManagedChromeController {
   private frameId = 0
   private lastFrameSentAt = 0
   private generation = 0
+  private pageGeneration = 0
   private disposed = false
+  private readonly sessionInvalidationListeners = new Set<(reason: string) => void>()
   private readonly rendererReloadListener = (): void => {
     this.closeFramePort()
   }
@@ -116,6 +124,20 @@ export class ManagedChromeController {
     }
 
     return this.activeContext.page
+  }
+
+  getAutomationSessionIdentity(): AutomationSessionIdentity | null {
+    return this.getAutomationPage() === null
+      ? null
+      : {
+          browserGeneration: this.generation,
+          pageGeneration: this.pageGeneration,
+        }
+  }
+
+  onAutomationSessionInvalidated(listener: (reason: string) => void): () => void {
+    this.sessionInvalidationListeners.add(listener)
+    return () => this.sessionInvalidationListeners.delete(listener)
   }
 
   async launch(): Promise<ManagedChromeState> {
@@ -424,10 +446,15 @@ export class ManagedChromeController {
     mode: ContextMode,
     generation: number,
   ): void {
+    this.pageGeneration += 1
     const closeListener = (): void => {
       this.handleUnexpectedClose(generation)
     }
-    const frameNavigatedListener = (): void => {
+    const frameNavigatedListener = (frame: Frame): void => {
+      if (frame === page.mainFrame()) {
+        this.pageGeneration += 1
+        this.notifyAutomationSessionInvalidated('Controlled page generation changed.')
+      }
       void this.detectAuthenticationState()
     }
     const loadListener = (): void => {
@@ -629,6 +656,7 @@ export class ManagedChromeController {
       return emitState ? this.setState('stopped') : this.state
     }
 
+    this.notifyAutomationSessionInvalidated('Controlled browser or page generation changed.')
     this.activeContext = null
     activeContext.context.off('close', activeContext.closeListener)
     activeContext.page.off('framenavigated', activeContext.frameNavigatedListener)
@@ -653,6 +681,7 @@ export class ManagedChromeController {
     }
 
     const activeContext = this.activeContext
+    this.notifyAutomationSessionInvalidated('Managed Chrome disconnected.')
     this.activeContext = null
     activeContext.context.off('close', activeContext.closeListener)
     activeContext.page.off('framenavigated', activeContext.frameNavigatedListener)
@@ -673,6 +702,7 @@ export class ManagedChromeController {
     }
 
     const activeContext = this.activeContext
+    this.notifyAutomationSessionInvalidated('Managed Chrome session failed.')
     this.activeContext = null
     activeContext.context.off('close', activeContext.closeListener)
     activeContext.page.off('framenavigated', activeContext.frameNavigatedListener)
@@ -688,6 +718,10 @@ export class ManagedChromeController {
       this.activeContext !== null &&
       this.activeContext.mode === 'headless'
     )
+  }
+
+  private notifyAutomationSessionInvalidated(reason: string): void {
+    for (const listener of this.sessionInvalidationListeners) listener(reason)
   }
 
   private setState(

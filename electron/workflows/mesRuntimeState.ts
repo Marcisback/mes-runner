@@ -2,6 +2,7 @@ import { isLocatorEnabled, visibleMatches } from './primitives'
 import {
   hasVisibleAssetErrorDialog,
   inspectInitialScanner,
+  inspectActiveWorkflowAsset,
   inspectStepState,
 } from './stateDetectors'
 import type { AssetWorkflowContext } from './types'
@@ -9,6 +10,7 @@ import {
   resolveObservedState,
   type MesObservedState,
 } from './mesRuntimeStateCore'
+import type { ActiveWorkflowAssetRelation } from './activeWorkflowAssetCore'
 
 export type { MesObservedState } from './mesRuntimeStateCore'
 
@@ -16,6 +18,9 @@ export interface MesObservationMetadata {
   initialScanner: 'absent' | 'empty' | 'expected-asset' | 'unexpected-value' | 'unreadable'
   initialScannerEnabled: boolean
   startAvailable: boolean
+  startTargetCount: number
+  wipeTargetCount: number
+  diagnosticTargetCount: number
   wipeInputActionable: boolean
   wipeActionActionable: boolean
   wipeInputMatchesAsset: boolean
@@ -25,6 +30,14 @@ export interface MesObservationMetadata {
   diagnosticInputMatchesAsset: boolean
   failureDialogCount: number
   moveToRepairCount: number
+  activeWorkflowPresent: boolean
+  completionProcessing: boolean
+  activeWorkflowAssetRelation: ActiveWorkflowAssetRelation
+  activeWorkflowAssetTagResolved: boolean
+  activeWorkflowAssetTagCandidateCount: number
+  activeWorkflowAssetFieldContainerCount: number
+  activeWorkflowAssetValidValueCandidateCount: number
+  activeWorkflowAssetResolutionStrategy: 'asset-information-field-row'
   activeStates: MesObservedState[]
 }
 
@@ -48,6 +61,10 @@ export async function observeMesState(
     const failureDialogCount = await countFailureDialogs(context)
     const moveToRepairCount = await countMoveToRepairTargets(context)
     const businessError = await hasVisibleAssetErrorDialog(context.page)
+    const activeWorkflowAsset = await inspectActiveWorkflowAsset(
+      context.page,
+      context.assetId,
+    )
     const activeStates: MesObservedState[] = []
 
     if (startMatches.length === 1 && await isLocatorEnabled(startMatches[0])) {
@@ -72,10 +89,27 @@ export async function observeMesState(
     if (failureDialogCount === 1) activeStates.push('failure-dialog')
     if (moveToRepairCount === 1) activeStates.push('move-to-repair')
 
+    const activeWorkflowPresent = activeWorkflowAsset.activeWorkflowDetected ||
+      startMatches.length > 0 ||
+      wipe !== null ||
+      diagnostic !== null ||
+      failureDialogCount > 0 ||
+      moveToRepairCount > 0
+    const activeWorkflowAssetRelation =
+      activeWorkflowPresent && activeWorkflowAsset.relation === 'none'
+        ? 'unknown'
+        : activeWorkflowAsset.relation
+    const completionProcessing =
+      activeStates.includes('wipe-processing') ||
+      activeStates.includes('diagnostic-processing')
+
     const metadata: MesObservationMetadata = {
       initialScanner: mapInitialScanner(initial.state, initial.candidateCount),
       initialScannerEnabled: initial.enabled,
       startAvailable: activeStates.includes('start-ready'),
+      startTargetCount: startMatches.length,
+      wipeTargetCount: wipe === null ? 0 : 1,
+      diagnosticTargetCount: diagnostic === null ? 0 : 1,
       wipeInputActionable: wipe?.inputActionable ?? false,
       wipeActionActionable: wipe?.passActionable ?? false,
       wipeInputMatchesAsset: wipe?.inputMatchesAsset ?? false,
@@ -85,6 +119,14 @@ export async function observeMesState(
       diagnosticInputMatchesAsset: diagnostic?.inputMatchesAsset ?? false,
       failureDialogCount,
       moveToRepairCount,
+      activeWorkflowPresent,
+      completionProcessing,
+      activeWorkflowAssetRelation,
+      activeWorkflowAssetTagResolved: activeWorkflowAsset.assetTagResolved,
+      activeWorkflowAssetTagCandidateCount: activeWorkflowAsset.assetTagCandidateCount,
+      activeWorkflowAssetFieldContainerCount: activeWorkflowAsset.fieldContainerCount,
+      activeWorkflowAssetValidValueCandidateCount: activeWorkflowAsset.validValueCandidateCount,
+      activeWorkflowAssetResolutionStrategy: activeWorkflowAsset.strategy,
       activeStates,
     }
 
@@ -98,6 +140,10 @@ export async function observeMesState(
         initialState: initial.state,
         initialCandidateCount: initial.candidateCount,
         initialEnabled: initial.enabled,
+        activeWorkflowPresent,
+        completionProcessing,
+        activeWorkflowAssetRelation,
+        assetTagCandidateCount: activeWorkflowAsset.assetTagCandidateCount,
       }),
       metadata,
     }
@@ -155,6 +201,9 @@ function emptyObservationMetadata(): MesObservationMetadata {
     initialScanner: 'unreadable',
     initialScannerEnabled: false,
     startAvailable: false,
+    startTargetCount: 0,
+    wipeTargetCount: 0,
+    diagnosticTargetCount: 0,
     wipeInputActionable: false,
     wipeActionActionable: false,
     wipeInputMatchesAsset: false,
@@ -164,6 +213,14 @@ function emptyObservationMetadata(): MesObservationMetadata {
     diagnosticInputMatchesAsset: false,
     failureDialogCount: 0,
     moveToRepairCount: 0,
+    activeWorkflowPresent: false,
+    completionProcessing: false,
+    activeWorkflowAssetRelation: 'none',
+    activeWorkflowAssetTagResolved: false,
+    activeWorkflowAssetTagCandidateCount: 0,
+    activeWorkflowAssetFieldContainerCount: 0,
+    activeWorkflowAssetValidValueCandidateCount: 0,
+    activeWorkflowAssetResolutionStrategy: 'asset-information-field-row',
     activeStates: [],
   }
 }

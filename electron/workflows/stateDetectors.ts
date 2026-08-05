@@ -10,9 +10,104 @@ import { SELECTORS } from './types'
 import { WorkflowInvariantError } from './errors'
 import type { WorkflowRuntime } from './types'
 import type { ReconciledWorkflowState } from './transitionRecoveryCore'
+import {
+  resolveActiveWorkflowAsset,
+  isValidAssetId,
+  type ActiveWorkflowAssetResolution,
+  type LabeledAssetField,
+} from './activeWorkflowAssetCore'
 
 const CONTAINER_SELECTOR =
   "section, form, article, [role='region'], [role='group'], div"
+
+export async function inspectActiveWorkflowAsset(
+  page: Page,
+  expectedAssetId: string,
+): Promise<ActiveWorkflowAssetResolution & { activeWorkflowDetected: boolean }> {
+  const informationTitles = await visibleMatches(
+    page.getByText(/^Asset Information$/i, { exact: true }),
+  )
+  const contextTitles = informationTitles.length === 0
+    ? await visibleMatches(page.getByText(/^Context$/i, { exact: true }))
+    : []
+  const titles = informationTitles.length > 0 ? informationTitles : contextTitles
+  const regions: Locator[] = []
+
+  for (const title of titles) {
+    const region = title.locator(
+      'xpath=ancestor::*[.//*[normalize-space(.)="Asset tag" or normalize-space(.)="Asset tag:"]][1]',
+    )
+    if ((await region.count().catch(() => 0)) === 1 && await isLocatorVisible(region)) {
+      regions.push(region)
+    }
+  }
+
+  const activeWorkflowDetected = titles.length > 0
+  const fields: LabeledAssetField[] = []
+
+  if (regions.length === 1) {
+    const labels = await visibleMatches(
+      regions[0].getByText(/^Asset tag:?$/i, { exact: true }),
+    )
+    for (const label of labels) {
+      fields.push({
+        label: (await label.textContent().catch(() => null)) ?? 'Asset tag',
+        ...await readLabeledAssetTagField(label),
+      })
+    }
+  } else if (regions.length > 1) {
+    fields.push(
+      { label: 'Asset tag', values: [], fieldContainerResolved: false },
+      { label: 'Asset tag', values: [], fieldContainerResolved: false },
+    )
+  }
+
+  return {
+    activeWorkflowDetected,
+    ...resolveActiveWorkflowAsset(activeWorkflowDetected, fields, expectedAssetId),
+  }
+}
+
+async function readLabeledAssetTagField(
+  label: Locator,
+): Promise<Pick<LabeledAssetField, 'values' | 'fieldContainerResolved'>> {
+  const containers = label.locator(
+    'xpath=ancestor::*[self::div or self::li or self::tr or self::dl or self::section or @role="row" or @role="group"]',
+  )
+  const containerCount = Math.min(await containers.count().catch(() => 0), 6)
+
+  for (let index = 0; index < containerCount; index += 1) {
+    const container = containers.nth(index)
+    if (!(await isLocatorVisible(container))) continue
+    const candidates = await visibleMatches(
+      container.locator('a, [role="link"], dd, td, span, p'),
+    )
+    const values: string[] = []
+    for (const candidate of candidates) {
+      const value = await readLocatorValue(candidate)
+      if (value !== null && isValidAssetId(value)) values.push(value)
+    }
+    const sibling = await singleVisibleOrNull(
+      label.locator('xpath=following-sibling::*[1]'),
+      'Asset tag adjacent value',
+    )
+    if (sibling !== null) {
+      const value = await readLocatorValue(sibling)
+      if (value !== null && isValidAssetId(value)) values.push(value)
+    }
+    if (values.length > 0) {
+      return { values, fieldContainerResolved: true }
+    }
+  }
+
+  return { values: [], fieldContainerResolved: false }
+}
+
+async function readLocatorValue(locator: Locator): Promise<string | null> {
+  const inputValue = await locator.inputValue().catch(() => null)
+  if (inputValue !== null) return inputValue
+  return locator.textContent().catch(() => null)
+}
 
 export async function findInitialScanner(page: Page): Promise<Locator | null> {
   return singleVisibleEnabledOrNull(

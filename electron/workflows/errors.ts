@@ -6,22 +6,31 @@ export class StopRequestedError extends Error {
 }
 
 export class AssetSkipError extends Error {
-  constructor(readonly reason: string) {
+  readonly reason: string
+
+  constructor(reason: string) {
     super(reason)
+    this.reason = reason
     this.name = 'AssetSkipError'
   }
 }
 
 export class NeedsReviewError extends Error {
-  constructor(readonly reason: string) {
+  readonly reason: string
+
+  constructor(reason: string) {
     super(reason)
+    this.reason = reason
     this.name = 'NeedsReviewError'
   }
 }
 
 export class WorkflowInvariantError extends Error {
-  constructor(readonly reason: string) {
+  readonly reason: string
+
+  constructor(reason: string) {
     super(reason)
+    this.reason = reason
     this.name = 'WorkflowInvariantError'
   }
 }

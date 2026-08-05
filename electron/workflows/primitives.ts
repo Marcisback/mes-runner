@@ -3,9 +3,9 @@ import {
   BrowserDisconnectedError,
   StopRequestedError,
   WorkflowInvariantError,
-} from './errors'
-import { closePopupIfPresent } from './popupHandler'
-import { WORKFLOW_TIMEOUTS, type WorkflowRuntime } from './types'
+} from './errors.ts'
+import { closePopupIfPresent } from './popupHandler.ts'
+import { WORKFLOW_TIMEOUTS, type WorkflowRuntime } from './types.ts'
 
 export async function popupAwareWait<T>(
   runtime: WorkflowRuntime,
@@ -90,6 +90,9 @@ export async function typeAndSubmit(
   await input.click()
   await input.fill('')
   await input.fill(value)
+  if ((await input.inputValue()) !== value) {
+    throw new WorkflowInvariantError('Workflow input did not retain the expected asset before submission.')
+  }
   await sleepWithCheckpoint(runtime, 150)
   await runtime.page.keyboard.press('Enter')
   await sleepWithCheckpoint(runtime, 400)

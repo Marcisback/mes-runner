@@ -1,5 +1,5 @@
 import type { WorkflowMode } from '../../src/types/eolRunner'
-import type { MesObservation } from './mesRuntimeState'
+import type { MesObservation, MesObservedState } from './mesRuntimeState'
 import { WORKFLOW_RECOVERY_LIMITS } from './transitionRecoveryCore.ts'
 
 export type WorkflowExpectedStage =
@@ -65,6 +65,25 @@ export interface RuntimeReconciliationInput {
   interruption: RuntimeInterruptionState
 }
 
+export function getRuntimeActionPostconditions(
+  action: RuntimeAction,
+): readonly MesObservedState[] {
+  switch (action) {
+    case 'submit-asset':
+      return ['start-ready', 'wipe-ready', 'wipe-processing', 'diagnostic-ready', 'diagnostic-processing']
+    case 'click-start': return ['wipe-ready', 'wipe-processing']
+    case 'scan-wipe': return ['wipe-ready', 'wipe-processing']
+    case 'confirm-wipe': return ['diagnostic-ready', 'diagnostic-processing', 'workflow-completed', 'landing']
+    case 'scan-diagnostic': return ['diagnostic-ready', 'diagnostic-processing']
+    case 'confirm-diagnostic': return ['workflow-completed', 'landing']
+    case 'click-diagnostic-failed': return ['failure-dialog', 'move-to-repair']
+    case 'complete-failure-dialog': return ['move-to-repair']
+    case 'complete-move-to-repair': return ['workflow-completed', 'landing']
+    case 'press-enter': return getRuntimeActionPostconditions('submit-asset')
+    case 'handle-business-error': return []
+  }
+}
+
 export type RuntimeDecision =
   | { kind: 'act'; action: RuntimeAction; reason: string }
   | { kind: 'wait'; reason: string }
@@ -98,7 +117,33 @@ export function reconcileRuntimeState(
   if (state === 'business-error') {
     return { kind: 'act', action: 'handle-business-error', reason: 'Known business dialog is visible.' }
   }
+  if (state === 'active-workflow-mismatch') {
+    return {
+      kind: 'needs-review',
+      reason: 'MES already has an active workflow for a different asset. Finish or exit that workflow before continuing.',
+    }
+  }
   if (state === 'unknown') {
+    if (
+      input.observation.metadata.activeWorkflowPresent &&
+      input.observation.metadata.activeWorkflowAssetRelation === 'unknown'
+    ) {
+      if (input.pendingAction === 'submit-asset') {
+        return input.retries.transitionTimedOut
+          ? {
+              kind: 'needs-review',
+              reason: 'MES opened an active workflow, but its Asset tag could not be resolved before the identification timeout.',
+            }
+          : {
+              kind: 'wait',
+              reason: 'Active workflow detected; waiting for Asset tag identification.',
+            }
+      }
+      return {
+        kind: 'needs-review',
+        reason: 'MES has an active workflow whose Asset tag could not be matched safely.',
+      }
+    }
     if (input.pendingAction !== null && !input.retries.transitionTimedOut) {
       return {
         kind: 'wait',
@@ -132,8 +177,23 @@ export function reconcileRuntimeState(
             reason: 'Start reappeared after later workflow progress was confirmed.',
           }
     case 'wipe-processing':
+      return input.expectedStage === 'asset-submission' || input.expectedStage === 'start'
+        ? {
+            kind: 'skip-forward',
+            expectedStage: 'wipe-scan',
+            confirmedStage: 'start-confirmed',
+            reason: 'MES already advanced to Wipe processing.',
+          }
+        : { kind: 'wait', reason: `${state} is still observable.` }
     case 'diagnostic-processing':
-      return { kind: 'wait', reason: `${state} is still observable.` }
+      return input.mode !== 'EOL' && isBeforeDiagnostic(input.expectedStage)
+        ? {
+            kind: 'skip-forward',
+            expectedStage: 'diagnostic-scan',
+            confirmedStage: 'wipe-confirmed',
+            reason: 'MES already advanced to Diagnostic processing.',
+          }
+        : { kind: 'wait', reason: `${state} is still observable.` }
     case 'wipe-ready':
       return reconcileWipe(input)
     case 'diagnostic-ready':
@@ -184,6 +244,21 @@ function reconcileLandingOrCompletion(
       action: 'submit-asset',
       reason: 'Empty enabled landing scanner is ready for the current asset.',
     }
+  }
+
+  if (
+    input.lastConfirmedStage === 'none' &&
+    input.pendingAction === 'submit-asset'
+  ) {
+    return input.retries.transitionTimedOut
+      ? {
+          kind: 'needs-review',
+          reason: 'MES did not show an active workflow before the asset-submission transition timed out.',
+        }
+      : {
+          kind: 'wait',
+          reason: 'Waiting for MES to acknowledge asset submission.',
+        }
   }
 
   const validCompletion =

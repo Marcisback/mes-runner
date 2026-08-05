@@ -19,6 +19,9 @@ import {
   type WorkflowOptions,
 } from './workflows/types'
 import { processAssetWorkflow } from './workflows/workflows'
+import {
+  RuntimeQueueHandoff,
+} from './workflows/queueHandoffCore'
 import type {
   EolAssetResult,
   EolAssetErrorDetails,
@@ -45,11 +48,16 @@ export class EolRunner {
   private currentStep: string | null = null
   private lastCompletedStep: string | null = null
   private authenticationWaitLogged = false
+  private readonly queueHandoff = new RuntimeQueueHandoff()
 
   constructor(
     private readonly hostWindow: BrowserWindow,
     private readonly managedChrome: ManagedChromeController,
-  ) {}
+  ) {
+    this.managedChrome.onAutomationSessionInvalidated((reason) => {
+      this.clearQueueHandoff(reason)
+    })
+  }
 
   getSnapshot(): EolRunnerSnapshot {
     return this.snapshot
@@ -100,6 +108,12 @@ export class EolRunner {
       diagnostics: this.diagnostics,
     }
     this.logDiagnostic('info', 'Run started.')
+    const terminalReceipt = this.getValidQueueHandoff()
+    if (terminalReceipt !== null) {
+      this.logDiagnostic('info', 'New run started with owned terminal receipt.', {
+        reason: `previousMode=${terminalReceipt.previousMode}; terminalStage=${terminalReceipt.terminalStage}`,
+      })
+    }
     this.emitSnapshot()
 
     this.runInProgress = this.runSequentially(request.options)
@@ -116,6 +130,7 @@ export class EolRunner {
     }
 
     this.pauseRequested = true
+    this.logDiagnostic('info', 'Runner paused; pending transition deadline suspended.')
     return this.setState('paused')
   }
 
@@ -125,6 +140,7 @@ export class EolRunner {
     }
 
     this.pauseRequested = false
+    this.logDiagnostic('info', 'Runner resumed; MES state will be re-observed.')
     return this.setState('running')
   }
 
@@ -134,6 +150,8 @@ export class EolRunner {
     }
 
     this.stopRequested = true
+    this.clearQueueHandoff('Stop Safely invalidated the queue handoff.')
+    this.logDiagnostic('info', 'Stop Safely requested; no new workflow action will begin.')
 
     if (this.snapshot.currentAssetId === null) {
       return this.setState('completed')
@@ -144,8 +162,9 @@ export class EolRunner {
 
   private async runSequentially(options: WorkflowOptions): Promise<void> {
     try {
-      for (const asset of this.snapshot.assets) {
-      if (this.stopRequested) {
+      for (let index = 0; index < this.snapshot.assets.length; index += 1) {
+        const asset = this.snapshot.assets[index]
+        if (this.stopRequested) {
           this.logDiagnostic('info', 'Run stopped before next asset.')
           this.setState('completed')
           return
@@ -195,6 +214,7 @@ export class EolRunner {
     const page = this.getReadyPage()
 
     if (page === null) {
+      this.clearQueueHandoff('Browser unavailability invalidated the queue handoff.')
       this.updateAsset(asset.id, 'needs-review', this.getUnavailableReason())
       this.setState('stopping', 'Managed Chrome is unavailable.')
       return false
@@ -205,17 +225,42 @@ export class EolRunner {
     this.lastCompletedStep = null
     this.updateAsset(asset.id, 'running', null)
     this.logDiagnostic('info', 'Asset started.', { assetId: asset.id })
+    const queueHandoff = this.getValidQueueHandoff()
+    if (queueHandoff !== null) {
+      this.logDiagnostic('info', 'Next asset started with authorized terminal handoff.', {
+        reason: `previousMode=${queueHandoff.previousMode}; terminalStage=${queueHandoff.terminalStage}`,
+      })
+    }
 
     const runtime = this.createWorkflowContext(page, asset.id, options)
 
     try {
-      await processAssetWorkflow(runtime)
+      const completion = await processAssetWorkflow(runtime)
       this.updateAsset(asset.id, 'completed', null)
       this.logDiagnostic('info', 'Asset completed.', { assetId: asset.id })
+      const identity = this.managedChrome.getAutomationSessionIdentity()
+      const authorization = identity === null
+        ? null
+        : this.queueHandoff.authorize(
+            completion.mode,
+            completion.terminalStage,
+            identity,
+          )
+      if (authorization !== null) {
+        this.logDiagnostic('info', 'Terminal receipt recorded.', {
+          reason: [
+            `previousMode=${authorization.previousMode}`,
+            `terminalStage=${authorization.terminalStage}`,
+            `browserGeneration=${authorization.browserGeneration}`,
+            `pageGeneration=${authorization.pageGeneration}`,
+          ].join('; '),
+        })
+      }
       await sleepWithCheckpoint(runtime, WORKFLOW_TIMEOUTS.betweenAssetSuccessMs)
       return true
     } catch (error: unknown) {
       if (error instanceof StopRequestedError) {
+        this.clearQueueHandoff('Stop Safely invalidated the queue handoff.')
         this.updateAsset(asset.id, 'needs-review', 'stopped', error)
         this.logDiagnostic('warning', 'Asset stopped at a safe action boundary.', {
           assetId: asset.id,
@@ -227,6 +272,7 @@ export class EolRunner {
       }
 
       if (error instanceof AssetSkipError) {
+        this.clearQueueHandoff('Asset skip invalidated the queue handoff.')
         this.updateAsset(asset.id, 'skipped', error.reason, error)
         this.logDiagnostic('warning', 'Asset skipped.', {
           assetId: asset.id,
@@ -244,6 +290,7 @@ export class EolRunner {
         error instanceof BrowserDisconnectedError ||
         isBrowserDisconnectedDiagnostic(error)
       ) {
+        this.clearQueueHandoff('Workflow error invalidated the queue handoff.')
         const reason = sanitizeWorkflowReason(error)
         this.updateAsset(asset.id, 'needs-review', reason, error)
         this.logDiagnostic('error', 'Asset needs review.', {
@@ -256,6 +303,7 @@ export class EolRunner {
       }
 
       this.updateAsset(asset.id, 'needs-review', 'unexpected-error', error)
+      this.clearQueueHandoff('Unexpected error invalidated the queue handoff.')
       this.logDiagnostic('error', 'Unexpected asset error.', {
         assetId: asset.id,
         errorClass: error instanceof Error ? error.name : 'UnknownError',
@@ -296,6 +344,14 @@ export class EolRunner {
       log: (severity, message, details) => {
         this.logDiagnostic(severity, message, details)
       },
+      getQueueHandoff: () => this.getValidQueueHandoff(),
+      consumeQueueHandoff: () => {
+        const identity = this.managedChrome.getAutomationSessionIdentity()
+        if (identity === null || !this.queueHandoff.consume(identity)) return false
+        this.logDiagnostic('info', 'Terminal receipt consumed.')
+        return true
+      },
+      clearQueueHandoff: (reason) => this.clearQueueHandoff(reason),
     }
   }
 
@@ -332,6 +388,7 @@ export class EolRunner {
         lifecycle === 'authenticating' ||
         lifecycle === 'resuming-headless'
       ) {
+        this.clearQueueHandoff('Authentication interrupted queue handoff ownership.')
         if (!this.authenticationWaitLogged) {
           this.logDiagnostic('warning', 'Authentication transition detected; workflow is waiting.')
           this.authenticationWaitLogged = true
@@ -342,6 +399,7 @@ export class EolRunner {
       }
 
       this.logDiagnostic('error', 'Browser disconnected or unavailable.')
+      this.clearQueueHandoff('Browser disconnection invalidated the queue handoff.')
       throw new BrowserDisconnectedError()
     }
   }
@@ -363,6 +421,24 @@ export class EolRunner {
     }
 
     return 'browser-disconnected'
+  }
+
+  private clearQueueHandoff(reason: string): void {
+    if (!this.queueHandoff.clear()) return
+    this.logDiagnostic('warning', 'Terminal receipt invalidated.', { reason })
+  }
+
+  private getValidQueueHandoff(): ReturnType<RuntimeQueueHandoff['peek']> {
+    const identity = this.managedChrome.getAutomationSessionIdentity()
+    if (identity === null) return null
+    const hadReceipt = this.queueHandoff.peek() !== null
+    const receipt = this.queueHandoff.peek(identity)
+    if (hadReceipt && receipt === null) {
+      this.logDiagnostic('warning', 'Terminal receipt invalidated.', {
+        reason: 'Controlled browser or page generation no longer matches.',
+      })
+    }
+    return receipt
   }
 
   private updateAsset(

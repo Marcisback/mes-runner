@@ -1,5 +1,5 @@
 import type { Locator } from 'playwright-core'
-import { NeedsReviewError, WorkflowInvariantError } from './errors'
+import { NeedsReviewError, WorkflowInvariantError } from './errors.ts'
 import {
   clickWithSettles,
   isLocatorEnabled,
@@ -9,8 +9,8 @@ import {
   singleVisibleOrNull,
   uniqueVisibleEnabled,
   waitScopedVisibleAndEnabled,
-} from './primitives'
-import { type WorkflowRuntime } from './types'
+} from './primitives.ts'
+import { type WorkflowRuntime } from './types.ts'
 
 const FAILURE_DIALOG_TIMEOUT_MS = 10_000
 const FAILURE_OPTION_TIMEOUT_MS = 8_000
@@ -19,6 +19,7 @@ const FAILURE_REASON_LABEL = 'Phone - Display'
 export async function completeFailureReasonDialog(
   runtime: WorkflowRuntime,
 ): Promise<void> {
+  runtime.log('info', 'Failure dialog interaction started.')
   const dialog = await scopedWait(
     runtime,
     'failure reason dialog',
@@ -103,7 +104,7 @@ export async function completeFailureReasonDialog(
     async () => ((await findFailureReasonDialog(runtime)) === null ? true : null),
     FAILURE_DIALOG_TIMEOUT_MS,
   )
-  runtime.log('info', 'Failure dialog closed after confirmation.')
+  runtime.log('info', 'Failure dialog completed.')
 }
 
 async function resolveFailureCombobox(dialog: Locator): Promise<Locator> {
@@ -136,16 +137,7 @@ async function findFailureReasonDialog(
     return roleDialog
   }
 
-  const candidates = runtime.page
-    .locator('div, section, form')
-    .filter({ hasText: 'Select failure reason' })
-    .filter({
-      has: runtime.page.locator(
-        'button[aria-label="Confirm failure"], button[role="combobox"][aria-haspopup="listbox"]',
-      ),
-    })
-
-  return singleVisibleOrNull(candidates, 'fallback failure reason dialog')
+  return null
 }
 
 async function findFailureOption(
@@ -206,7 +198,7 @@ async function transitionFocusToConfirmFailure(
     throw new NeedsReviewError('Failure reason listbox could not be proven closed.')
   }
 
-  runtime.log('info', 'Owned listbox closed.')
+  runtime.log('info', 'Failure listbox closed.')
 
   if (!(await isLocatorVisible(dialog))) {
     runtime.log('error', 'Unexpected parent dialog dismissal.', {

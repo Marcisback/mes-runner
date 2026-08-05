@@ -1,8 +1,6 @@
 import {
   AssetSkipError,
-  BrowserDisconnectedError,
   NeedsReviewError,
-  StopRequestedError,
   WorkflowInvariantError,
 } from './errors'
 import { completeFailureReasonDialog } from './failureDialog'
@@ -12,6 +10,7 @@ import { closePopupIfPresent } from './popupHandler'
 import {
   clickWithSettles,
   countVisible,
+  isLocatorEditable,
   isLocatorEnabled,
   isLocatorVisible,
   popupAwareWait,
@@ -20,35 +19,39 @@ import {
   typeAndSubmit,
 } from './primitives'
 import {
-  findConfirmDiagnostic,
   findConfirmMoveButton,
   findConfirmRepairButton,
   findConfirmWipe,
-  findDiagnosticFailedButton,
   findInitialScanner,
-  findMriConfirmDiagnostic,
-  findMriConfirmWipe,
   findRepairFailedButton,
   findRepairInput,
   findRepairLocatorInput,
   findRepairSection,
-  findStartButton,
-  findStepScanner,
   hasVisibleAssetErrorDialog,
   inspectInitialScanner,
 } from './stateDetectors'
 import {
   WORKFLOW_RECOVERY_LIMITS,
 } from './transitionRecoveryCore'
-import { observeMesState } from './mesRuntimeState'
 import {
-  reconcileRuntimeState,
-  type RuntimeAction,
-  type RuntimeDecision,
-  type RuntimeRetryCounters,
-  type WorkflowConfirmedStage,
-  type WorkflowExpectedStage,
-} from './runtimeReconciliation'
+  decideQueueHandoff,
+  isQueueHandoffAcknowledgementStage,
+} from './queueHandoffCore'
+import {
+  observeWorkflowStage,
+  probeStageControls,
+  type WorkflowStageSnapshot,
+} from './deterministicStages'
+import { activateSemanticAction } from './semanticActions'
+import {
+  isSlowPassiveProbe,
+  resolveStageLoopIteration,
+  shouldTimeoutPendingAction,
+  stabilizeMriCompletion,
+  type MesWorkflowStage,
+  type StageLoopAction,
+} from './deterministicStageCore'
+import { BoundedObservationGate } from './passiveObservationCore'
 import {
   WORKFLOW_TIMEOUTS,
   type AssetWorkflowContext,
@@ -74,23 +77,24 @@ export async function processAssetWorkflow(
 async function runEolWorkflow(
   context: AssetWorkflowContext,
 ): Promise<CompletionSignal> {
-  await runStateAwareWorkflow(context, 'EOL')
+  await runDeterministicWorkflow(context, 'EOL')
 
   return {
     mode: 'EOL',
     signal: 'Confirm wipe cleared and the initial scanner returned enabled.',
+    terminalStage: 'eol-completed',
   }
 }
 
 async function runMriPassWorkflow(
   context: AssetWorkflowContext,
 ): Promise<CompletionSignal> {
-  await runStateAwareWorkflow(context, 'MRI')
+  await runDeterministicWorkflow(context, 'MRI')
 
   return {
     mode: 'MRI',
-    signal:
-      'Confirm diagnostic cleared and the initial scanner returned enabled.',
+    signal: 'Move to storage became stably visible after Confirm diagnostic.',
+    terminalStage: 'mri-completed',
   }
 }
 
@@ -98,20 +102,28 @@ async function runMriFailWorkflow(
   context: AssetWorkflowContext,
 ): Promise<CompletionSignal> {
   validateMoveToRepairLocator(context, context.options.moveToRepairLocator)
-  await runStateAwareWorkflow(context, 'MRI_FAIL')
+  await runDeterministicWorkflow(context, 'MRI_FAIL')
 
   return {
     mode: 'MRI_FAIL',
     signal: 'Confirm move cleared after verified Move to Repair selection.',
+    terminalStage: 'move-to-repair-completed',
   }
 }
 
-interface RuntimeProgress {
-  expectedStage: WorkflowExpectedStage
-  lastConfirmedStage: WorkflowConfirmedStage
-  pendingAction: RuntimeAction | null
-  retries: RuntimeRetryCounters
-  transitionDeadline: number
+async function runDeterministicWorkflow(
+  context: AssetWorkflowContext,
+  mode: 'EOL' | 'MRI' | 'MRI_FAIL',
+): Promise<void> {
+  await runStageLoop(context, mode)
+}
+
+interface StageLoopPendingAction {
+  action: StageLoopAction
+  startedAt: number
+  deadline: number
+  retryCount: number
+  lastStage: MesWorkflowStage
 }
 
 class RuntimeTargetChangedError extends Error {
@@ -121,291 +133,553 @@ class RuntimeTargetChangedError extends Error {
   }
 }
 
-async function runStateAwareWorkflow(
+async function runStageLoop(
   context: AssetWorkflowContext,
   mode: 'EOL' | 'MRI' | 'MRI_FAIL',
 ): Promise<void> {
-  const progress: RuntimeProgress = {
-    expectedStage: 'asset-submission',
-    lastConfirmedStage: 'none',
-    pendingAction: null,
-    retries: { assetEnter: 0, confirmWipe: 0, transitionTimedOut: false },
-    transitionDeadline: Date.now() + WORKFLOW_TIMEOUTS.startRecoveryCycleMs,
-  }
-  let lastDiagnosticKey: string | null = null
+  let submissionOwned = false
+  let pending: StageLoopPendingAction | null = null
+  let enterRetries = 0
+  let lastStage: MesWorkflowStage | null = null
+  let lastDecisionKey = ''
+  let lastSlowProbeKey = ''
+  let mriCompletionObservations = 0
+  let unrecognizedDeadline = Date.now() + WORKFLOW_TIMEOUTS.defaultMs
+  let handoffDeadline = Date.now() + WORKFLOW_TIMEOUTS.defaultMs
+  let handoffWaitingLogged = false
+  let handoffSubmissionPending = false
+  let lastObservationStartedKey = ''
+  let lastObservationCompletedKey = ''
+  let lastObservationTimeoutGeneration = 0
+  let expectedFailureDialogLogged = false
+  let reservedFailureDialogLogged = false
+  let mountingFailureDialogLogged = false
+  let recognizedFailureDialogLogged = false
+  const observationGate = new BoundedObservationGate<WorkflowStageSnapshot>(
+    WORKFLOW_TIMEOUTS.passiveObservationHardMs,
+  )
 
   for (;;) {
     const checkpointStartedAt = Date.now()
     await context.checkpoint()
-    const checkpointWaitMs = Date.now() - checkpointStartedAt
-    if (checkpointWaitMs > WORKFLOW_TIMEOUTS.stopPollMs * 2) {
-      progress.transitionDeadline += checkpointWaitMs
+    const suspendedMs = Date.now() - checkpointStartedAt
+    if (suspendedMs > WORKFLOW_TIMEOUTS.stopPollMs * 2) {
+      unrecognizedDeadline += suspendedMs
+      handoffDeadline += suspendedMs
+      if (pending !== null) pending.deadline += suspendedMs
     }
-    const observation = await observeMesState(context)
-    progress.retries.transitionTimedOut = Date.now() >= progress.transitionDeadline
-    const decision = reconcileRuntimeState({
-      mode,
-      observation,
-      expectedStage: progress.expectedStage,
-      lastConfirmedStage: progress.lastConfirmedStage,
-      pendingAction: progress.pendingAction,
-      retries: progress.retries,
-      interruption: {
-        paused: false,
-        stopRequested: context.isStopRequested(),
-        authenticationRequired: false,
-        browserDisconnected: false,
-      },
-    })
-    const diagnosticKey = `${observation.state}:${progress.expectedStage}:${progress.lastConfirmedStage}:${decision.kind}`
-    if (diagnosticKey !== lastDiagnosticKey) {
-      logRuntimeDecision(context, observation.state, progress, decision)
-      lastDiagnosticKey = diagnosticKey
+    const expectsFailureDialog = mode === 'MRI_FAIL' && pending?.action === 'fail-diagnostic'
+    const failureDialogClassificationDeadline = expectsFailureDialog && pending !== null
+      ? pending.startedAt + WORKFLOW_TIMEOUTS.failureDialogMountMs
+      : null
+    if (expectsFailureDialog && !expectedFailureDialogLogged) {
+      context.log('info', 'Expected failure dialog pending.')
+      expectedFailureDialogLogged = true
+    }
+    const popupResult = await closePopupIfPresent(
+      context,
+      failureDialogClassificationDeadline === null
+        ? null
+        : {
+            expectedWorkflowDialog: 'failure-reason',
+            classificationDeadline: failureDialogClassificationDeadline,
+          },
+    )
+    if (popupResult === 'closed') continue
+    if (popupResult === 'security') {
+      await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.recoveryPollMs)
+      continue
+    }
+    if (popupResult === 'workflow-owned' || popupResult === 'workflow-mounting') {
+      if (!reservedFailureDialogLogged) {
+        context.log('info', 'Workflow dialog reserved from generic popup handling.', {
+          reason: 'classification=failure-reason',
+        })
+        reservedFailureDialogLogged = true
+      }
+      if (popupResult === 'workflow-mounting' && !mountingFailureDialogLogged) {
+        context.log('info', 'Failure dialog mounting.')
+        mountingFailureDialogLogged = true
+      }
+    }
+    if (popupResult === 'classification-expired') {
+      context.log('error', 'Workflow dialog classification expired.', {
+        reason: 'Expected failure-reason dialog did not become identifiable.',
+      })
+      throw new NeedsReviewError(
+        'Expected failure-reason dialog did not become identifiable before timeout.',
+      )
     }
 
-    if (decision.kind === 'wait' || decision.kind === 'paused') {
-      if (progress.retries.transitionTimedOut && decision.kind === 'wait') {
-        throw new NeedsReviewError(
-          `Timed out while ${decision.reason.toLowerCase()}`,
-        )
+    const observationDiagnosticKey = `${pending?.action ?? 'none'}:${lastStage ?? 'none'}`
+    if (observationDiagnosticKey !== lastObservationStartedKey) {
+      context.log('info', 'Passive observation started.', {
+        reason: `pending=${pending?.action ?? 'none'}`,
+      })
+      lastObservationStartedKey = observationDiagnosticKey
+    }
+    const observationStartedAt = Date.now()
+    const observation = await observationGate.observe(
+      () => observeWorkflowStage(context, mode),
+    )
+    const staleDiscardCount = observationGate.consumeStaleDiscardCount()
+    if (staleDiscardCount > 0) {
+      context.log('warning', 'Stale observation discarded.', {
+        reason: `count=${staleDiscardCount}`,
+      })
+    }
+    if (observation.kind === 'hard-timeout') {
+      if (observation.generation !== lastObservationTimeoutGeneration) {
+        context.log('warning', 'Passive observation hard timeout.', {
+          reason: [
+            `generation=${observation.generation}`,
+            `durationMs=${Date.now() - observationStartedAt}`,
+            `pending=${pending?.action ?? 'none'}`,
+          ].join('; '),
+        })
+        lastObservationTimeoutGeneration = observation.generation
       }
-      await sleepRuntimePoll(context, progress)
+      await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.recoveryPollMs)
       continue
     }
-    if (decision.kind === 'skip-forward') {
-      progress.expectedStage = decision.expectedStage
-      progress.lastConfirmedStage = decision.confirmedStage
-      progress.pendingAction = null
-      progress.retries.transitionTimedOut = false
-      progress.transitionDeadline = transitionDeadlineFor(progress.expectedStage)
+    const snapshot = observation.value
+    if (snapshot.stage === 'failure-dialog' && !recognizedFailureDialogLogged) {
+      context.log('info', 'Failure dialog recognized.')
+      recognizedFailureDialogLogged = true
+    }
+    if (observationDiagnosticKey !== lastObservationCompletedKey) {
+      context.log('info', 'Passive observation completed.', {
+        reason: [
+          `generation=${observation.generation}`,
+          `durationMs=${snapshot.durationMs}`,
+          `stage=${snapshot.stage}`,
+          `pending=${pending?.action ?? 'none'}`,
+        ].join('; '),
+      })
+      lastObservationCompletedKey = observationDiagnosticKey
+    }
+    if (isSlowPassiveProbe(snapshot.durationMs)) {
+      context.log('warning', 'Slow passive workflow observation.', {
+        reason: `durationMs=${snapshot.durationMs}`,
+      })
+    }
+    const slowProbes = [
+      ['start', snapshot.start.durationMs],
+      ['wipe', snapshot.wipe.durationMs],
+      ['diagnostic', snapshot.diagnostic.durationMs],
+    ] as const
+    const slowProbeKey = slowProbes
+      .filter(([, duration]) => isSlowPassiveProbe(duration))
+      .map(([name, duration]) => `${name}:${duration}`)
+      .join(',')
+    if (slowProbeKey !== '' && slowProbeKey !== lastSlowProbeKey) {
+      context.log('warning', 'Slow individual workflow probe.', {
+        reason: slowProbeKey,
+      })
+    }
+    lastSlowProbeKey = slowProbeKey
+
+    const handoff = context.getQueueHandoff()
+    if (!submissionOwned && handoff !== null) {
+      if (snapshot.stage === 'mri-completed') {
+        const initial = snapshot.initial
+        const scannerState = initial.state === 'initial-unexpected'
+          ? 'unexpected-value'
+          : initial.state === 'initial-empty' &&
+              initial.locator !== null &&
+              initial.enabled &&
+              await isLocatorEditable(initial.locator)
+            ? 'actionable-empty'
+            : 'temporarily-unavailable'
+        const handoffDecision = decideQueueHandoff(
+          handoff,
+          true,
+          scannerState,
+          Date.now() >= handoffDeadline,
+        )
+        if (handoffDecision.kind === 'wait') {
+          if (!handoffWaitingLogged) {
+            context.log('info', 'Queue handoff waiting for global scanner.', {
+              reason: handoffDecision.reason,
+            })
+            handoffWaitingLogged = true
+          }
+          await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.recoveryPollMs)
+          continue
+        }
+        if (handoffDecision.kind === 'reject') {
+          context.clearQueueHandoff(handoffDecision.reason)
+          throw new NeedsReviewError(handoffDecision.reason)
+        }
+        if (initial.locator === null) {
+          throw new RuntimeTargetChangedError('Queue handoff scanner changed before submission.')
+        }
+        context.setStep('Submit Asset')
+        context.log('info', 'Queue handoff scanner resolved.')
+        await typeStageAndSubmit(context, initial.locator, () => {
+          if (!context.consumeQueueHandoff()) {
+            throw new NeedsReviewError('Terminal receipt changed before submission dispatch.')
+          }
+        })
+        context.log('info', 'Queue handoff asset submission dispatched.')
+        submissionOwned = true
+        handoffSubmissionPending = true
+        pending = createStageLoopPending('submit-asset', snapshot.stage, 0)
+        continue
+      }
+      context.clearQueueHandoff(
+        snapshot.stage === 'landing'
+          ? 'Authorized terminal cleared before queue handoff; clean landing will be used.'
+          : 'Authorized terminal was replaced by another MES workflow state.',
+      )
+    }
+
+    const stabilizedCompletion = stabilizeMriCompletion(
+      snapshot.stage,
+      mriCompletionObservations,
+    )
+    let stage = stabilizedCompletion.stage
+    const completionStabilizing = stabilizedCompletion.stabilizing
+    mriCompletionObservations = stabilizedCompletion.consecutiveObservations
+    if (snapshot.stage === 'mri-completed') {
+      if (pending !== null) {
+        context.log('info', 'Terminal evidence observed during pending action.', {
+          reason: `action=${pending.action}; stage=mri-completed; elapsedMs=${Date.now() - pending.startedAt}`,
+        })
+      }
+      if (completionStabilizing) {
+        context.log('info', 'Completion stabilization observation.', {
+          reason: `pending=${pending?.action ?? 'none'}; evidence=move-to-storage`,
+        })
+      }
+    }
+    if (mode === 'EOL' && stage === 'landing' && pending?.action === 'confirm-wipe') {
+      stage = 'eol-completed'
+    }
+
+    if (stage !== lastStage) {
+      context.log('info', `Stage changed: ${lastStage ?? 'none'} -> ${stage}`, {
+        reason: formatSnapshotEvidence(snapshot, pending),
+      })
+      lastStage = stage
+      lastDecisionKey = ''
+      unrecognizedDeadline = Date.now() + WORKFLOW_TIMEOUTS.defaultMs
+    }
+
+    if (!submissionOwned && snapshot.activeWorkflowPresent) {
+      throw new NeedsReviewError(
+        'MES already has an active workflow. Finish or exit it before starting another asset.',
+      )
+    }
+
+    const iteration = resolveStageLoopIteration(
+      mode,
+      stage,
+      submissionOwned,
+      pending?.action ?? null,
+    )
+    const handoffAcknowledged = !handoffSubmissionPending ||
+      isQueueHandoffAcknowledgementStage(stage)
+    if (pending !== null && iteration.acknowledged && handoffAcknowledged) {
+      const acceptedAfterDeadline = Date.now() >= pending.deadline
+      context.log('info', 'Postcondition observed.', {
+        reason: `action=${pending.action}; stage=${stage}; elapsedMs=${Date.now() - pending.startedAt}`,
+      })
+      if (acceptedAfterDeadline) {
+        context.log('warning', 'Postcondition accepted after nominal deadline.', {
+          reason: `action=${pending.action}; stage=${stage}; elapsedMs=${Date.now() - pending.startedAt}`,
+        })
+      }
+      context.log('info', `Action acknowledged: ${pending.action}`)
+      if (pending.action === 'fail-diagnostic' && stage === 'failure-dialog') {
+        context.log('info', 'fail-diagnostic acknowledged by failure-dialog.')
+      }
+      context.completeStep(stageLoopActionLabel(pending.action))
+      if (pending.action === 'submit-asset' || pending.action === 'press-enter') {
+        context.log('info', `Submission acknowledged by stage: ${stage}`)
+        if (handoffSubmissionPending) {
+          context.log('info', 'Queue handoff postcondition acknowledged.', {
+            reason: `observedStage=${stage}`,
+          })
+          handoffSubmissionPending = false
+        }
+      }
+      pending = null
+    }
+
+    if (pending !== null) {
+      pending.lastStage = stage
+      const elapsed = Date.now() - pending.startedAt
+      if (completionStabilizing) continue
+      if (
+        pending.action === 'submit-asset' &&
+        stage === 'asset-retained' &&
+        Date.now() >= pending.deadline &&
+        enterRetries < WORKFLOW_RECOVERY_LIMITS.assetSubmissionEnterRetries
+      ) {
+        try {
+          await dispatchStageLoopAction(context, mode, 'press-enter')
+        } catch (error: unknown) {
+          if (error instanceof RuntimeTargetChangedError) {
+            context.log('info', 'Enter retry target changed; re-observing MES.')
+            continue
+          }
+          throw error
+        }
+        enterRetries += 1
+        pending = createStageLoopPending('press-enter', stage, enterRetries)
+        context.log('warning', 'Asset submission Enter retried.', {
+          reason: `retry=${enterRetries}/${WORKFLOW_RECOVERY_LIMITS.assetSubmissionEnterRetries}`,
+        })
+        continue
+      }
+      if (shouldTimeoutPendingAction(false, completionStabilizing, Date.now() >= pending.deadline)) {
+        context.log('error', `Action timed out: ${pending.action}`, {
+          reason: `lastStage=${stage}; elapsedMs=${elapsed}`,
+        })
+        if (pending.action === 'submit-asset' || pending.action === 'press-enter') {
+          throw new NeedsReviewError(
+            stage === 'asset-retained'
+              ? 'Asset submission Enter retry limit was exhausted.'
+              : 'MES did not expose the submitted asset workflow before timeout.',
+          )
+        }
+        if (pending.action === 'fail-diagnostic') {
+          context.log('error', 'Workflow dialog classification expired.', {
+            reason: 'Expected failure-reason dialog did not appear before transition timeout.',
+          })
+          throw new NeedsReviewError(
+            'Expected failure-reason dialog did not appear before transition timeout.',
+          )
+        }
+        throw new NeedsReviewError(`MES did not confirm ${pending.action} before timeout.`)
+      }
+      await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.recoveryPollMs)
       continue
     }
+
+    const decision = iteration.decision
+    const decisionKey = `${stage}:${decision.kind}:${'action' in decision ? decision.action : decision.reason}`
+    if (decisionKey !== lastDecisionKey) {
+      context.log(decision.kind === 'needs-review' ? 'error' : 'info', `Decision: ${
+        'action' in decision ? decision.action : decision.kind
+      }`, { reason: decision.reason })
+      lastDecisionKey = decisionKey
+    }
+
     if (decision.kind === 'complete') {
-      confirmPendingCompletion(progress)
-      await verifyWorkflowCompletion(context, mode)
+      if (mode === 'EOL') await verifyEolCompletion(context)
       return
     }
     if (decision.kind === 'needs-review') throw new NeedsReviewError(decision.reason)
-    if (decision.kind === 'stopped') throw new StopRequestedError(decision.reason)
-    if (decision.kind === 'disconnected') throw new BrowserDisconnectedError(decision.reason)
-    if (decision.kind === 'authentication-required') {
-      await sleepRuntimePoll(context, progress)
+    if (decision.kind === 'wait') {
+      if (Date.now() >= unrecognizedDeadline) {
+        throw new NeedsReviewError(`MES remained at ${stage} without a safe action before timeout.`)
+      }
+      await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.recoveryPollMs)
       continue
     }
 
+    let dispatchOutcome: StageActionDispatchOutcome
     try {
-      await executeRuntimeAction(context, decision.action)
+      dispatchOutcome = await dispatchStageLoopAction(context, mode, decision.action)
     } catch (error: unknown) {
       if (error instanceof RuntimeTargetChangedError) {
         context.log('info', 'Action target changed; re-observing MES.', {
           reason: error.message,
         })
-        lastDiagnosticKey = null
+        lastDecisionKey = ''
         continue
       }
       throw error
     }
-    advanceAfterAction(progress, decision)
-    lastDiagnosticKey = null
-  }
-}
-
-async function sleepRuntimePoll(
-  context: AssetWorkflowContext,
-  progress: RuntimeProgress,
-): Promise<void> {
-  const startedAt = Date.now()
-  await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.recoveryPollMs)
-  const excessWaitMs = Date.now() - startedAt - WORKFLOW_TIMEOUTS.recoveryPollMs
-  if (excessWaitMs > WORKFLOW_TIMEOUTS.stopPollMs * 2) {
-    progress.transitionDeadline += excessWaitMs
-  }
-}
-
-async function executeRuntimeAction(
-  context: AssetWorkflowContext,
-  action: RuntimeAction,
-): Promise<void> {
-  await runWorkflowStep(context, runtimeActionLabel(action), async () => {
-    switch (action) {
-      case 'submit-asset': {
-        const scanner = await findInitialScanner(context.page)
-        if (scanner === null) throw new RuntimeTargetChangedError('Initial scanner changed before submission.')
-        await typeAndSubmit(context, scanner, context.assetId)
-        return
-      }
-      case 'press-enter': {
-        const scanner = await inspectInitialScanner(context.page, context.assetId)
-        if (scanner.state !== 'initial-asset' || scanner.locator === null || !scanner.enabled) {
-          throw new RuntimeTargetChangedError('Initial scanner changed before Enter recovery.')
-        }
-        await scanner.locator.focus()
-        await context.page.keyboard.press('Enter')
-        return
-      }
-      case 'click-start': {
-        const start = await findStartButton(context.page)
-        if (start === null) throw new RuntimeTargetChangedError('Start changed before activation.')
-        await clickWithSettles(context, start, 150, 350)
-        return
-      }
-      case 'scan-wipe': {
-        const scanner = await findStepScanner(context, 'Wipe')
-        if (scanner === null) throw new RuntimeTargetChangedError('Wipe scanner changed before scanning.')
-        await typeAndSubmit(context, scanner, context.assetId)
-        return
-      }
-      case 'confirm-wipe': {
-        const confirm = await findMriConfirmWipe(context)
-        if (confirm === null) throw new RuntimeTargetChangedError('Confirm Wipe changed before activation.')
-        await clickWithSettles(context, confirm, 75, 300)
-        await sleepWithCheckpoint(context, 1_000)
-        return
-      }
-      case 'scan-diagnostic': {
-        const scanner = await findStepScanner(context, 'Diagnostic')
-        if (scanner === null) throw new RuntimeTargetChangedError('Diagnostic scanner changed before scanning.')
-        await typeAndSubmit(context, scanner, context.assetId)
-        return
-      }
-      case 'confirm-diagnostic': {
-        const confirm = await findMriConfirmDiagnostic(context)
-        if (confirm === null) throw new RuntimeTargetChangedError('Confirm Diagnostic changed before activation.')
-        await clickWithSettles(context, confirm, 75, 300)
-        await sleepWithCheckpoint(context, WORKFLOW_TIMEOUTS.mriFinalSettleMs)
-        return
-      }
-      case 'click-diagnostic-failed': {
-        const failed = await findDiagnosticFailedButton(context)
-        if (failed === null) throw new RuntimeTargetChangedError('Diagnostic Failed changed before activation.')
-        await clickWithSettles(context, failed, 75, 300)
-        return
-      }
-      case 'complete-failure-dialog':
-        await completeFailureReasonDialog(context)
-        return
-      case 'complete-move-to-repair':
-        await completeMoveToRepair(context, context.options.moveToRepairLocator)
-        return
-      case 'handle-business-error':
-        await closePopupIfPresent(context)
-        return
+    if (dispatchOutcome === 'already-advanced') {
+      lastDecisionKey = ''
+      continue
     }
-  })
-}
-
-function advanceAfterAction(progress: RuntimeProgress, decision: Extract<RuntimeDecision, { kind: 'act' | 'retry-transition' }>): void {
-  const action = decision.action
-  const existingDeadline = progress.transitionDeadline
-  progress.pendingAction = action
-  progress.retries.transitionTimedOut = false
-
-  switch (action) {
-    case 'submit-asset':
-    case 'press-enter':
-      progress.expectedStage = 'start'
-      if (action === 'press-enter') progress.retries.assetEnter += 1
-      break
-    case 'click-start':
-      progress.expectedStage = 'wipe-scan'
-      progress.lastConfirmedStage = 'asset-submitted'
-      break
-    case 'scan-wipe':
-      progress.expectedStage = 'wipe-confirm'
-      break
-    case 'confirm-wipe':
-      progress.expectedStage = 'wipe-transition'
-      progress.lastConfirmedStage = 'wipe-scanned'
-      if (decision.kind === 'retry-transition') progress.retries.confirmWipe += 1
-      break
-    case 'scan-diagnostic':
-      progress.expectedStage = 'diagnostic-action'
-      break
-    case 'confirm-diagnostic':
-      progress.expectedStage = 'diagnostic-transition'
-      progress.lastConfirmedStage = 'diagnostic-scanned'
-      break
-    case 'click-diagnostic-failed':
-      progress.expectedStage = 'failure-dialog'
-      progress.lastConfirmedStage = 'diagnostic-scanned'
-      break
-    case 'complete-failure-dialog':
-      progress.expectedStage = 'move-to-repair'
-      progress.lastConfirmedStage = 'diagnostic-failed'
-      break
-    case 'complete-move-to-repair':
-      progress.expectedStage = 'completion'
-      progress.lastConfirmedStage = 'move-confirmed'
-      progress.pendingAction = null
-      break
-    case 'handle-business-error':
-      progress.pendingAction = null
-      break
+    if (decision.action === 'complete-move-to-repair') {
+      await verifyMoveToRepairCompletion(context)
+      context.completeStep(stageLoopActionLabel(decision.action))
+      return
+    }
+    if (decision.action === 'submit-asset') submissionOwned = true
+    pending = createStageLoopPending(decision.action, stage, 0)
+    context.log('info', `Action dispatched: ${decision.action}`, {
+      reason: `deadlineMs=${pending.deadline - pending.startedAt}`,
+    })
   }
-
-  progress.transitionDeadline =
-    action === 'confirm-wipe' && decision.kind === 'retry-transition'
-      ? existingDeadline
-      : transitionDeadlineFor(progress.expectedStage)
 }
 
-function confirmPendingCompletion(progress: RuntimeProgress): void {
-  if (progress.pendingAction === 'confirm-wipe') {
-    progress.lastConfirmedStage = 'wipe-confirmed'
-  } else if (progress.pendingAction === 'confirm-diagnostic') {
-    progress.lastConfirmedStage = 'diagnostic-confirmed'
-  }
-  progress.pendingAction = null
-}
-
-function transitionDeadlineFor(stage: WorkflowExpectedStage): number {
-  const timeout = stage === 'wipe-transition'
+function createStageLoopPending(
+  action: StageLoopAction,
+  stage: MesWorkflowStage,
+  retryCount: number,
+): StageLoopPendingAction {
+  const timeout = action === 'confirm-wipe'
     ? WORKFLOW_TIMEOUTS.wipeTransitionMs
     : WORKFLOW_TIMEOUTS.defaultMs
-  return Date.now() + timeout
+  const startedAt = Date.now()
+  return {
+    action: action === 'press-enter' ? 'submit-asset' : action,
+    startedAt,
+    deadline: startedAt + timeout,
+    retryCount,
+    lastStage: stage,
+  }
 }
 
-function runtimeActionLabel(action: RuntimeAction): string {
-  return action.split('-').map((part) => part[0].toUpperCase() + part.slice(1)).join(' ')
-}
-
-function logRuntimeDecision(
+async function dispatchStageLoopAction(
   context: AssetWorkflowContext,
-  observedState: string,
-  progress: RuntimeProgress,
-  decision: RuntimeDecision,
-): void {
-  const action = 'action' in decision ? decision.action : 'none'
-  context.log(decision.kind === 'needs-review' ? 'error' : 'info', 'Runtime state reconciled.', {
-    reason: [
-      `observed=${observedState}`,
-      `expected=${progress.expectedStage}`,
-      `lastConfirmed=${progress.lastConfirmedStage}`,
-      `pending=${progress.pendingAction ?? 'none'}`,
-      `decision=${decision.kind}`,
-      `action=${action}`,
-      `assetEnterRetry=${progress.retries.assetEnter}/${WORKFLOW_RECOVERY_LIMITS.assetSubmissionEnterRetries}`,
-      `confirmWipeRetry=${progress.retries.confirmWipe}/${WORKFLOW_RECOVERY_LIMITS.confirmWipeRetries}`,
-      `reason=${decision.reason}`,
-    ].join('; '),
-  })
+  mode: 'EOL' | 'MRI' | 'MRI_FAIL',
+  action: StageLoopAction,
+): Promise<StageActionDispatchOutcome> {
+  const label = stageLoopActionLabel(action)
+  context.setStep(label)
+  context.log('info', `Action started: ${action}`)
+  try {
+    let outcome: StageActionDispatchOutcome = 'dispatched'
+    switch (action) {
+      case 'submit-asset': {
+        const snapshot = await observeWorkflowStage(context, mode)
+        const initial = snapshot.initial
+        if (
+          snapshot.stage !== 'landing' ||
+          initial.locator === null ||
+          !initial.enabled ||
+          !(await isLocatorEditable(initial.locator))
+        ) throw new RuntimeTargetChangedError('Clean landing changed before submission.')
+        context.log('info', 'Target resolved: initial-scanner')
+        await typeStageAndSubmit(context, initial.locator)
+        break
+      }
+      case 'press-enter': {
+        const initial = await inspectInitialScanner(context.page, context.assetId)
+        if (initial.state !== 'initial-asset' || initial.locator === null || !initial.enabled) {
+          throw new RuntimeTargetChangedError('Retained asset changed before Enter recovery.')
+        }
+        context.log('info', 'Target resolved: retained-initial-scanner')
+        await initial.locator.focus()
+        await context.page.keyboard.press('Enter')
+        break
+      }
+      case 'click-start':
+      case 'confirm-wipe':
+      case 'confirm-diagnostic':
+      case 'fail-diagnostic': {
+        outcome = await activateSemanticAction(context, mode, action)
+        break
+      }
+      case 'scan-wipe-asset':
+        await scanScopedStage(context, 'Wipe', mode)
+        break
+      case 'scan-diagnostic-asset':
+        await scanScopedStage(context, 'Diagnostic', mode)
+        break
+      case 'complete-failure-dialog':
+        await completeFailureReasonDialog(context)
+        break
+      case 'complete-move-to-repair':
+        await completeMoveToRepair(context, context.options.moveToRepairLocator)
+        break
+    }
+    if (outcome === 'dispatched') context.log('info', 'Input action dispatched.')
+    return outcome
+  } catch (error: unknown) {
+    context.log('error', 'Workflow step failed.', {
+      errorClass: error instanceof Error ? error.name : 'WorkflowError',
+      reason: error instanceof Error ? error.message : 'workflow-error',
+    })
+    throw error
+  }
 }
 
-async function verifyWorkflowCompletion(
-  context: WorkflowRuntime,
+async function scanScopedStage(
+  context: AssetWorkflowContext,
+  stage: 'Wipe' | 'Diagnostic',
   mode: 'EOL' | 'MRI' | 'MRI_FAIL',
 ): Promise<void> {
-  if (mode === 'EOL') {
-    await verifyEolCompletion(context)
-    return
+  const action = mode === 'MRI_FAIL' ? 'fail' : 'pass'
+  const probe = await probeStageControls(context, stage, action)
+  const expected = stage === 'Wipe' ? 'wipe-scan-ready' : 'diagnostic-scan-ready'
+  if (probe.state !== expected || probe.scanner === null) {
+    throw new RuntimeTargetChangedError(`${stage} scanner changed before scanning.`)
   }
+  context.log('info', `Target resolved: scoped-${stage.toLowerCase()}-scanner`)
+  await typeStageAndSubmit(context, probe.scanner)
+}
 
-  if (mode === 'MRI') {
-    await verifyMriPassCompletion(context)
-    return
+async function typeStageAndSubmit(
+  context: AssetWorkflowContext,
+  scanner: import('playwright-core').Locator,
+  beforeSubmit?: () => void,
+): Promise<void> {
+  await context.checkpoint()
+  await scanner.scrollIntoViewIfNeeded()
+  if (
+    !(await isLocatorVisible(scanner)) ||
+    !(await isLocatorEnabled(scanner)) ||
+    !(await isLocatorEditable(scanner))
+  ) throw new RuntimeTargetChangedError('Scoped scanner is no longer actionable.')
+  await scanner.click()
+  await scanner.fill('')
+  await scanner.pressSequentially(context.assetId, { delay: 10 })
+  if ((await scanner.inputValue()) !== context.assetId) {
+    throw new WorkflowInvariantError('Scoped scanner did not retain the current asset.')
   }
+  beforeSubmit?.()
+  await context.page.keyboard.press('Enter')
+  await sleepWithCheckpoint(context, 400)
+}
 
-  await verifyMoveToRepairCompletion(context)
+function stageLoopActionLabel(action: StageLoopAction): string {
+  const labels: Record<StageLoopAction, string> = {
+    'submit-asset': 'Submit Asset',
+    'press-enter': 'Submit Asset',
+    'click-start': 'Start Workflow',
+    'scan-wipe-asset': 'Wipe Scan',
+    'confirm-wipe': 'Confirm Wipe',
+    'scan-diagnostic-asset': 'Diagnostic Scan',
+    'confirm-diagnostic': 'Confirm Diagnostic',
+    'fail-diagnostic': 'Diagnostic Failed',
+    'complete-failure-dialog': 'Failure dialog',
+    'complete-move-to-repair': 'Move to Repair',
+  }
+  return labels[action]
+}
+
+type StageActionDispatchOutcome = 'dispatched' | 'already-advanced'
+
+function formatSnapshotEvidence(
+  snapshot: WorkflowStageSnapshot,
+  pending: StageLoopPendingAction | null,
+): string {
+  const active = snapshot.stage.startsWith('diagnostic') ? snapshot.diagnostic : snapshot.wipe
+  const prefix = snapshot.stage.startsWith('diagnostic') ? 'diagnostic' : 'wipe'
+  return [
+    `${prefix}HeadingMatches=${active.evidence.headingMatchCount}`,
+    `${prefix}ScannerCandidates=${active.evidence.scannerCandidateCount}`,
+    `${prefix}Bundles=${active.evidence.sectionCandidateCount}`,
+    `${prefix}ScannerVisible=${active.evidence.scannerVisible}`,
+    `${prefix}ScannerEnabled=${active.evidence.scannerEnabled}`,
+    `${prefix}ScannerEditable=${active.evidence.scannerEditable}`,
+    `${prefix}ScannerValue=${active.evidence.scannerValue === 'different' ? 'other' : active.evidence.scannerValue}`,
+    `${prefix === 'wipe' ? 'confirmWipe' : 'diagnosticAction'}Matches=${active.evidence.buttonCandidateCount}`,
+    `${prefix === 'wipe' ? 'confirmWipe' : 'diagnosticAction'}Enabled=${active.evidence.buttonEnabled}`,
+    `ignoredTimelineLabels=${active.evidence.ignoredTimelineLabelCount}`,
+    `deduplicatedAncestorCandidates=${active.evidence.deduplicatedAncestorCandidateCount}`,
+    `resolutionStrategy=${active.evidence.resolutionStrategy}`,
+    `moveToRepairHeadingMatches=${snapshot.moveToRepair.headingMatchCount}`,
+    `moveToRepairLocatorCandidates=${snapshot.moveToRepair.locatorCandidateCount}`,
+    `confirmMoveMatches=${snapshot.moveToRepair.confirmMoveMatchCount}`,
+    `moveToRepairBundles=${snapshot.moveToRepair.bundleCount}`,
+    `ignoredGenericLocatorInputs=${snapshot.moveToRepair.ignoredGenericLocatorInputCount}`,
+    `ignoredTimelineRepairLabels=${snapshot.moveToRepair.ignoredTimelineRepairLabelCount}`,
+    `moveToRepairResolutionStrategy=${snapshot.moveToRepair.resolutionStrategy}`,
+    `startTargets=${snapshot.start.candidateCount}`,
+    `pending=${pending?.action ?? 'none'}`,
+    `transitionElapsedMs=${pending === null ? 0 : Date.now() - pending.startedAt}`,
+    `observationDurationMs=${snapshot.durationMs}`,
+  ].join('; ')
 }
 
 async function runRepairWorkflow(
@@ -467,6 +741,7 @@ async function runRepairWorkflow(
       mode: 'REPAIR',
       signal:
         'Failure dialog closed and optional Confirm Repair either cleared or was absent.',
+      terminalStage: 'repair-completed',
     }
   }
 
@@ -476,6 +751,7 @@ async function runRepairWorkflow(
   return {
     mode: 'REPAIR',
     signal: 'Confirm Repair cleared after repair confirmation.',
+    terminalStage: 'repair-completed',
   }
 }
 
@@ -599,15 +875,6 @@ async function verifyEolCompletion(
   })
 }
 
-async function verifyMriPassCompletion(
-  context: WorkflowRuntime,
-): Promise<void> {
-  await verifySafeInitialState(context, async () => {
-    const confirmDiagnostic = await findConfirmDiagnostic(context.page)
-    return confirmDiagnostic === null
-  })
-}
-
 async function verifyMoveToRepairCompletion(
   context: WorkflowRuntime,
 ): Promise<void> {
@@ -667,12 +934,14 @@ async function runWorkflowStep<T>(
   context: AssetWorkflowContext,
   step: string,
   action: () => Promise<T>,
+  completeOnDispatch = true,
 ): Promise<T> {
   context.setStep(step)
 
   try {
     const result = await action()
-    context.completeStep(step)
+    context.log('info', 'Input action dispatched.')
+    if (completeOnDispatch) context.completeStep(step)
     return result
   } catch (error: unknown) {
     context.log('error', 'Workflow step failed.', {

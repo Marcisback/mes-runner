@@ -4,6 +4,7 @@ import type { WorkflowMode } from '../../src/types/eolRunner.ts'
 import type { MesObservation, MesObservedState } from './mesRuntimeState.ts'
 import {
   reconcileRuntimeState,
+  getRuntimeActionPostconditions,
   type RuntimeReconciliationInput,
 } from './runtimeReconciliation.ts'
 
@@ -17,6 +18,9 @@ function observation(
       initialScanner: 'absent',
       initialScannerEnabled: false,
       startAvailable: false,
+      startTargetCount: 0,
+      wipeTargetCount: 0,
+      diagnosticTargetCount: 0,
       wipeInputActionable: false,
       wipeActionActionable: false,
       wipeInputMatchesAsset: false,
@@ -26,6 +30,14 @@ function observation(
       diagnosticInputMatchesAsset: false,
       failureDialogCount: 0,
       moveToRepairCount: 0,
+      activeWorkflowPresent: false,
+      completionProcessing: false,
+      activeWorkflowAssetRelation: 'none',
+      activeWorkflowAssetTagResolved: false,
+      activeWorkflowAssetTagCandidateCount: 0,
+      activeWorkflowAssetFieldContainerCount: 0,
+      activeWorkflowAssetValidValueCandidateCount: 0,
+      activeWorkflowAssetResolutionStrategy: 'asset-information-field-row',
       activeStates: [state],
       ...metadata,
     },
@@ -104,6 +116,165 @@ test('normal MRI Pass selects Diagnostic scan and pass', () => {
   }), 'act:confirm-diagnostic')
 })
 
+test('MRI active WRO with persistent scanner selects Start', () => {
+  assert.equal(actionFor('MRI', 'start-ready', {
+    expectedStage: 'start',
+    observation: observation('start-ready', {
+      initialScanner: 'empty',
+      initialScannerEnabled: true,
+      startAvailable: true,
+      activeWorkflowPresent: true,
+      activeWorkflowAssetRelation: 'current',
+      activeWorkflowAssetTagResolved: true,
+      activeWorkflowAssetTagCandidateCount: 1,
+    }),
+  }), 'act:click-start')
+})
+
+test('landing after Submit Asset waits for acknowledgement until deadline', () => {
+  const pending = {
+    mode: 'MRI' as const,
+    expectedStage: 'start' as const,
+    lastConfirmedStage: 'none' as const,
+    pendingAction: 'submit-asset' as const,
+  }
+  assert.equal(reconcileRuntimeState(input('landing', {
+    ...pending,
+    retries: { assetEnter: 0, confirmWipe: 0, transitionTimedOut: false },
+  })).kind, 'wait')
+
+  const timedOut = reconcileRuntimeState(input('landing', {
+    ...pending,
+    retries: { assetEnter: 0, confirmWipe: 0, transitionTimedOut: true },
+  }))
+  assert.equal(timedOut.kind, 'needs-review')
+  assert.match(timedOut.reason, /asset-submission transition timed out/)
+})
+
+test('Submit Asset completes only on a forward acknowledgement state', () => {
+  const postconditions = getRuntimeActionPostconditions('submit-asset')
+  assert.equal(postconditions.includes('landing'), false)
+  assert.equal(postconditions.includes('start-ready'), true)
+  assert.equal(postconditions.includes('wipe-ready'), true)
+  assert.equal(postconditions.includes('diagnostic-ready'), true)
+})
+
+test('forward states after Submit Asset continue without resubmission', () => {
+  const pending = {
+    mode: 'MRI' as const,
+    expectedStage: 'start' as const,
+    lastConfirmedStage: 'none' as const,
+    pendingAction: 'submit-asset' as const,
+  }
+  assert.equal(actionFor('MRI', 'start-ready', pending), 'act:click-start')
+  assert.equal(reconcileRuntimeState(input('wipe-ready', pending)).kind, 'skip-forward')
+  assert.equal(reconcileRuntimeState(input('wipe-processing', pending)).kind, 'skip-forward')
+  assert.equal(reconcileRuntimeState(input('diagnostic-ready', pending)).kind, 'skip-forward')
+  assert.equal(reconcileRuntimeState(input('diagnostic-processing', pending)).kind, 'skip-forward')
+})
+
+test('premature landing remains unsafe after genuine workflow entry', () => {
+  const result = reconcileRuntimeState(input('landing', {
+    mode: 'MRI',
+    expectedStage: 'wipe-scan',
+    lastConfirmedStage: 'start-confirmed',
+    pendingAction: null,
+  }))
+  assert.equal(result.kind, 'needs-review')
+  assert.match(result.reason, /required final transition/)
+})
+
+test('foreign active WRO stops without selecting an action', () => {
+  const result = reconcileRuntimeState(input('active-workflow-mismatch', {
+    mode: 'MRI',
+    expectedStage: 'asset-submission',
+    observation: observation('active-workflow-mismatch', {
+      initialScanner: 'empty',
+      initialScannerEnabled: true,
+      startAvailable: true,
+      activeWorkflowPresent: true,
+      activeWorkflowAssetRelation: 'different',
+      activeWorkflowAssetTagResolved: true,
+      activeWorkflowAssetTagCandidateCount: 1,
+    }),
+  }))
+  assert.equal(result.kind, 'needs-review')
+  assert.equal(result.reason, 'MES already has an active workflow for a different asset. Finish or exit that workflow before continuing.')
+})
+
+test('unmatched active WRO stops before submission', () => {
+  const result = reconcileRuntimeState(input('unknown', {
+    observation: observation('unknown', {
+      activeWorkflowPresent: true,
+      activeWorkflowAssetRelation: 'unknown',
+    }),
+  }))
+  assert.equal(result.kind, 'needs-review')
+  assert.match(result.reason, /Asset tag could not be matched safely/)
+})
+
+test('pending submission waits for transient active-workflow identification', () => {
+  const metadata = {
+    activeWorkflowPresent: true,
+    activeWorkflowAssetRelation: 'unknown' as const,
+    startTargetCount: 1,
+    wipeTargetCount: 1,
+  }
+  const waiting = reconcileRuntimeState(input('unknown', {
+    mode: 'MRI',
+    expectedStage: 'start',
+    lastConfirmedStage: 'none',
+    pendingAction: 'submit-asset',
+    observation: observation('unknown', metadata),
+  }))
+  assert.equal(waiting.kind, 'wait')
+  assert.match(waiting.reason, /waiting for Asset tag identification/)
+
+  const timedOut = reconcileRuntimeState(input('unknown', {
+    mode: 'MRI',
+    expectedStage: 'start',
+    lastConfirmedStage: 'none',
+    pendingAction: 'submit-asset',
+    observation: observation('unknown', metadata),
+    retries: { assetEnter: 0, confirmWipe: 0, transitionTimedOut: true },
+  }))
+  assert.equal(timedOut.kind, 'needs-review')
+  assert.match(timedOut.reason, /identification timeout/)
+})
+
+test('reported landing to identification to Start sequence advances safely', () => {
+  const pending = {
+    mode: 'MRI' as const,
+    expectedStage: 'start' as const,
+    lastConfirmedStage: 'none' as const,
+    pendingAction: 'submit-asset' as const,
+  }
+  assert.equal(reconcileRuntimeState(input('landing', pending)).kind, 'wait')
+  assert.equal(reconcileRuntimeState(input('unknown', {
+    ...pending,
+    observation: observation('unknown', {
+      activeWorkflowPresent: true,
+      activeWorkflowAssetRelation: 'unknown',
+      startTargetCount: 1,
+      wipeTargetCount: 1,
+    }),
+  })).kind, 'wait')
+  assert.equal(actionFor('MRI', 'start-ready', {
+    ...pending,
+    observation: observation('start-ready', {
+      activeWorkflowPresent: true,
+      activeWorkflowAssetRelation: 'current',
+      activeWorkflowAssetTagResolved: true,
+      activeWorkflowAssetTagCandidateCount: 1,
+      activeWorkflowAssetFieldContainerCount: 1,
+      activeWorkflowAssetValidValueCandidateCount: 1,
+      startAvailable: true,
+      startTargetCount: 1,
+      wipeTargetCount: 1,
+    }),
+  }), 'act:click-start')
+})
+
 test('MRI Pass already at Diagnostic skips Wipe', () => {
   assert.equal(reconcileRuntimeState(input('diagnostic-ready', {
     mode: 'MRI',
@@ -146,6 +317,24 @@ test('MRI Fail premature generic completion needs review', () => {
   })).kind, 'needs-review')
 })
 
+test('mode-specific confirmed completion remains accepted', () => {
+  assert.equal(reconcileRuntimeState(input('landing', {
+    mode: 'EOL',
+    expectedStage: 'completion',
+    lastConfirmedStage: 'wipe-confirmed',
+  })).kind, 'complete')
+  assert.equal(reconcileRuntimeState(input('landing', {
+    mode: 'MRI',
+    expectedStage: 'completion',
+    lastConfirmedStage: 'diagnostic-confirmed',
+  })).kind, 'complete')
+  assert.equal(reconcileRuntimeState(input('landing', {
+    mode: 'MRI_FAIL',
+    expectedStage: 'completion',
+    lastConfirmedStage: 'move-confirmed',
+  })).kind, 'complete')
+})
+
 test('retained asset uses two bounded Enter retries', () => {
   assert.equal(actionFor('EOL', 'asset-retained', {
     expectedStage: 'start',
@@ -165,8 +354,13 @@ test('Start already completed skips forward to Wipe', () => {
 })
 
 test('busy stages wait without duplicate actions', () => {
-  assert.equal(reconcileRuntimeState(input('wipe-processing')).kind, 'wait')
-  assert.equal(reconcileRuntimeState(input('diagnostic-processing', { mode: 'MRI' })).kind, 'wait')
+  assert.equal(reconcileRuntimeState(input('wipe-processing', {
+    expectedStage: 'wipe-transition',
+  })).kind, 'wait')
+  assert.equal(reconcileRuntimeState(input('diagnostic-processing', {
+    mode: 'MRI',
+    expectedStage: 'diagnostic-action',
+  })).kind, 'wait')
 })
 
 test('authentication interruption and later resume re-evaluate current state', () => {
