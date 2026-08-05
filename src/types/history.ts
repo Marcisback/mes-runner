@@ -28,6 +28,12 @@ export interface HistoryDateSummary {
   total: number
 }
 
+export interface HistoryDatesRequest {
+  startDate: string
+  endDate: string
+  preset?: HistoryRangePreset
+}
+
 export interface HistoryResult {
   id: number
   assetId: string
@@ -70,18 +76,37 @@ export interface HistoryRangeResult {
   offset: number
 }
 
+export interface HistoryAssetIdsRequest {
+  startDate: string
+  endDate: string
+  preset?: HistoryRangePreset
+  search?: string
+  mode?: WorkflowMode | 'all'
+  outcome?: HistoryOutcome | 'all'
+}
+
+export interface HistoryAssetIdsResult {
+  assetIds: string[]
+  complete: boolean
+}
+
 export type HistoryResponse<T> =
   | { ok: true; data: T; health: HistoryHealth }
   | { ok: false; data: null; health: HistoryHealth; error: string }
 
 export interface HistoryApi {
   getWeeklySummary(): Promise<HistoryResponse<WeeklyHistorySummary>>
-  getHistoryDates(): Promise<HistoryResponse<HistoryDateSummary[]>>
+  getHistoryDates(
+    request: HistoryDatesRequest,
+  ): Promise<HistoryResponse<HistoryDateSummary[]>>
   getHistoryForDate(
     request: HistoryDateRequest,
   ): Promise<HistoryResponse<HistoryRangeResult>>
   getHistoryRange(
     request: HistoryRangeRequest,
   ): Promise<HistoryResponse<HistoryRangeResult>>
+  getHistoryAssetIds(
+    request: HistoryAssetIdsRequest,
+  ): Promise<HistoryResponse<HistoryAssetIdsResult>>
   onHistoryChanged(listener: () => void): () => void
 }

@@ -3,7 +3,9 @@ import test from 'node:test'
 import {
   currentLocalWeek,
   localDateBounds,
+  parseHistoryAssetIdsRequest,
   parseHistoryDateRequest,
+  parseHistoryDatesRequest,
   parseHistoryRangeRequest,
 } from './historyValidation.ts'
 import { resolveHistoryPresetRange } from '../../src/lib/historyCalendar.ts'
@@ -51,6 +53,32 @@ test('validates typed calendar presets and preserves custom ranges', () => {
     preset: 'this_week',
     startDate: lastWeek.startDate,
     endDate: lastWeek.endDate,
+  }), null)
+})
+
+test('validates range-scoped date summaries and asset-ID export filters', () => {
+  const range = resolveHistoryPresetRange('this_week')
+  assert.ok(parseHistoryDatesRequest({
+    preset: 'this_week',
+    startDate: range.startDate,
+    endDate: range.endDate,
+  }))
+  assert.ok(parseHistoryAssetIdsRequest({
+    preset: 'custom',
+    startDate: '2026-08-01',
+    endDate: '2026-08-05',
+    search: 'it29',
+    mode: 'MRI_FAIL',
+    outcome: 'needs_review',
+  }))
+  assert.equal(parseHistoryDatesRequest({
+    startDate: '2026-08-05',
+    endDate: '2026-08-01',
+  }), null)
+  assert.equal(parseHistoryAssetIdsRequest({
+    startDate: '2026-08-01',
+    endDate: '2026-08-05',
+    mode: 'SQL',
   }), null)
 })
 

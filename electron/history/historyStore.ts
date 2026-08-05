@@ -1,5 +1,6 @@
 import sqlite3 from 'sqlite3'
 import type {
+  HistoryAssetIdsResult,
   HistoryDateSummary,
   HistoryHealth,
   HistoryOutcome,
@@ -18,6 +19,7 @@ import {
 
 const SCHEMA_VERSION = 2
 const SAFE_DATABASE_ERROR = 'Local history is unavailable.'
+const MAX_ASSET_ID_EXPORT_ROWS = 1_000
 
 interface RunResult {
   lastID: number
@@ -41,6 +43,10 @@ interface ResultRow {
   reason: string | null
   started_at: string
   finished_at: string
+}
+
+interface AssetIdRow {
+  asset_id: string
 }
 
 export class LocalHistoryStore {
@@ -155,16 +161,19 @@ export class LocalHistoryStore {
     })
   }
 
-  async getHistoryDates(limit = 366): Promise<HistoryResponse<HistoryDateSummary[]>> {
+  async getHistoryDates(
+    request: ValidatedHistoryRange,
+  ): Promise<HistoryResponse<HistoryDateSummary[]>> {
+    const bounds = localRangeBounds(request.startDate, request.endDate)
     return this.read(async (database) => {
       return all<HistoryDateSummary>(
         database,
         `SELECT date(finished_at, 'localtime') AS date, COUNT(*) AS total
          FROM asset_results
+         WHERE finished_at >= ? AND finished_at < ?
          GROUP BY date(finished_at, 'localtime')
-         ORDER BY date DESC
-         LIMIT ?`,
-        [limit],
+         ORDER BY date DESC`,
+        [bounds.start, bounds.end],
       )
     })
   }
@@ -200,6 +209,28 @@ export class LocalHistoryStore {
         results: rows.map(mapResultRow),
         limit: request.limit,
         offset: request.offset,
+      }
+    })
+  }
+
+  async getHistoryAssetIds(
+    request: ValidatedHistoryRange,
+  ): Promise<HistoryResponse<HistoryAssetIdsResult>> {
+    const bounds = localRangeBounds(request.startDate, request.endDate)
+    return this.read(async (database) => {
+      const where = buildResultWhere(bounds.start, bounds.end, request)
+      const rows = await all<AssetIdRow>(
+        database,
+        `SELECT asset_id
+         FROM asset_results
+         ${where.sql}
+         ORDER BY finished_at DESC, id DESC
+         LIMIT ?`,
+        [...where.params, MAX_ASSET_ID_EXPORT_ROWS + 1],
+      )
+      return {
+        assetIds: rows.slice(0, MAX_ASSET_ID_EXPORT_ROWS).map((row) => row.asset_id),
+        complete: rows.length <= MAX_ASSET_ID_EXPORT_ROWS,
       }
     })
   }

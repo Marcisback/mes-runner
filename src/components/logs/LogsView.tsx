@@ -4,7 +4,16 @@ import { useHistory } from '../../state/historyContext'
 import { useWorkspace } from '../../state/workspaceContext'
 import { formatDiagnostics } from '../../lib/diagnostics'
 import { resolveHistoryPresetRange } from '../../lib/historyCalendar'
+import {
+  buildFilteredHistoryRequest,
+  canCopyHistoryAssetIds,
+  copyFilteredAssetIds,
+  normalizeHistoryDates,
+  resolveActiveHistoryRange,
+  selectDateWithinRange,
+} from '../../lib/historyView'
 import type {
+  HistoryDateSummary,
   HistoryOutcome,
   HistoryRangePreset,
   HistoryRangeResult,
@@ -21,7 +30,7 @@ const DEFAULT_HISTORY_RANGE = resolveHistoryPresetRange('this_week')
 
 export function LogsView() {
   const { runners } = useEngine()
-  const { dates, health, revision } = useHistory()
+  const { health, revision } = useHistory()
   const { logsFilterIntent } = useWorkspace()
   const [view, setView] = useState<View>('history')
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
@@ -34,9 +43,39 @@ export function LogsView() {
     logsFilterIntent === 'needs-review' ? 'needs_review' : 'all',
   )
   const [history, setHistory] = useState<HistoryRangeResult | null>(null)
+  const [dates, setDates] = useState<HistoryDateSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [copying, setCopying] = useState(false)
+  const [copyFeedback, setCopyFeedback] = useState<{
+    kind: 'success' | 'error'
+    message: string
+  } | null>(null)
+
+  const activeRange = useMemo(
+    () => resolveActiveHistoryRange(preset, customStart, customEnd),
+    [customEnd, customStart, preset],
+  )
+  const activeSelectedDate = selectDateWithinRange(selectedDate, activeRange)
+  const filteredRequest = useMemo(
+    () => buildFilteredHistoryRequest(activeRange, activeSelectedDate, {
+      search,
+      mode,
+      outcome,
+    }),
+    [activeRange, activeSelectedDate, mode, outcome, search],
+  )
+
+  useEffect(() => {
+    if (selectedDate !== null && activeSelectedDate === null) setSelectedDate(null)
+  }, [activeSelectedDate, selectedDate])
+
+  useEffect(() => {
+    if (copyFeedback === null) return
+    const timeout = window.setTimeout(() => setCopyFeedback(null), 3_000)
+    return () => window.clearTimeout(timeout)
+  }, [copyFeedback])
 
   useEffect(() => {
     let active = true
@@ -47,36 +86,70 @@ export function LogsView() {
         return
       }
       setLoading(true)
-      const filters = { search, mode, outcome, limit: 500, offset: 0 }
       let response
+      let datesResponse
       try {
-        response = selectedDate !== null
-          ? await window.mesHistory.getHistoryForDate({ date: selectedDate, ...filters })
-          : await window.mesHistory.getHistoryRange({
-              ...resolveRange(preset, customStart, customEnd),
-              ...filters,
-            })
+        [datesResponse, response] = await Promise.all([
+          window.mesHistory.getHistoryDates(activeRange),
+          window.mesHistory.getHistoryRange({
+            ...filteredRequest,
+            limit: 500,
+            offset: 0,
+          }),
+        ])
       } catch {
         if (active) {
           setHistory(null)
+          setDates([])
           setError('Local history is unavailable.')
           setLoading(false)
         }
         return
       }
       if (!active) return
-      if (response.ok) {
-        setHistory(response.data)
-        setError(null)
-      } else {
+      if (!response.ok) {
         setHistory(null)
+        setDates([])
         setError(response.error)
+      } else if (!datesResponse.ok) {
+        setHistory(null)
+        setDates([])
+        setError(datesResponse.error)
+      } else {
+        setHistory(response.data)
+        setDates(normalizeHistoryDates(datesResponse.data, activeRange))
+        setError(null)
       }
       setLoading(false)
     }
     void load()
     return () => { active = false }
-  }, [customEnd, customStart, health, mode, outcome, preset, revision, search, selectedDate])
+  }, [activeRange, filteredRequest, health, revision])
+
+  const activeRangeTotal = useMemo(
+    () => dates.reduce((total, item) => total + item.total, 0),
+    [dates],
+  )
+  const copyEnabled = canCopyHistoryAssetIds(
+    history?.total ?? 0,
+    loading,
+    error !== null,
+    copying,
+  )
+
+  async function copyAssetIds(): Promise<void> {
+    if (!copyEnabled) return
+    setCopying(true)
+    setCopyFeedback(null)
+    const result = await copyFilteredAssetIds(
+      () => window.mesHistory.getHistoryAssetIds({
+        ...filteredRequest,
+      }),
+      (text) => window.mesClipboard.writeText(text),
+    )
+    setCopying(false)
+    setCopyFeedback({ kind: result.ok ? 'success' : 'error', message: result.message })
+  }
 
   const diagnostics = useMemo(
     () => Object.values(runners)
@@ -113,11 +186,11 @@ export function LogsView() {
         <>
           <div className={styles.toolbar}>
             <div className={styles.segmented} aria-label="History range">
-              <button className={preset === 'this_week' && selectedDate === null ? styles.segmentActive : styles.segment} onClick={() => { setPreset('this_week'); setSelectedDate(null) }}>This Week</button>
-              <button className={preset === 'last_week' && selectedDate === null ? styles.segmentActive : styles.segment} onClick={() => { setPreset('last_week'); setSelectedDate(null) }}>Last Week</button>
-              <button className={preset === 'custom' && selectedDate === null ? styles.segmentActive : styles.segment} onClick={() => { setPreset('custom'); setSelectedDate(null) }}>Date Range</button>
+              <button className={preset === 'this_week' ? styles.segmentActive : styles.segment} onClick={() => setPreset('this_week')}>This Week</button>
+              <button className={preset === 'last_week' ? styles.segmentActive : styles.segment} onClick={() => setPreset('last_week')}>Last Week</button>
+              <button className={preset === 'custom' ? styles.segmentActive : styles.segment} onClick={() => setPreset('custom')}>Date Range</button>
             </div>
-            {preset === 'custom' && selectedDate === null && (
+            {preset === 'custom' && (
               <div className={styles.dateRange}>
                 <input type="date" value={customStart} onChange={(event) => setCustomStart(event.target.value)} aria-label="History start date" />
                 <span>to</span>
@@ -137,13 +210,38 @@ export function LogsView() {
               <option value="completed">Completed</option>
               <option value="needs_review">Needs Review</option>
             </select>
+            <button
+              className={styles.copyButton}
+              type="button"
+              disabled={!copyEnabled}
+              onClick={() => { void copyAssetIds() }}
+              title="Copy all matching asset IDs"
+              aria-label="Copy all matching asset IDs"
+            >
+              {copying ? 'Copying…' : 'Copy Asset IDs'}
+            </button>
+            <span
+              className={copyFeedback?.kind === 'error' ? styles.copyError : styles.copyFeedback}
+              role="status"
+              aria-live="polite"
+            >
+              {copyFeedback?.message ?? ''}
+            </span>
           </div>
 
           <div className={styles.content}>
             <aside className={styles.dates} aria-label="History dates">
               <h2>Dates</h2>
-              {dates.length === 0 ? <p>No recorded dates.</p> : dates.map((item) => (
-                <button key={item.date} className={selectedDate === item.date ? styles.dateActive : styles.dateButton} onClick={() => setSelectedDate(item.date)}>
+              <button
+                type="button"
+                className={activeSelectedDate === null ? styles.dateActive : styles.dateButton}
+                onClick={() => setSelectedDate(null)}
+              >
+                <span>All Dates</span>
+                <small>{activeRangeTotal} {activeRangeTotal === 1 ? 'asset' : 'assets'}</small>
+              </button>
+              {dates.length === 0 ? <p>No recorded dates in this range.</p> : dates.map((item) => (
+                <button type="button" key={item.date} className={activeSelectedDate === item.date ? styles.dateActive : styles.dateButton} onClick={() => setSelectedDate(item.date)}>
                   <span>{formatDate(item.date)}</span>
                   <small>{item.total} {item.total === 1 ? 'asset' : 'assets'}</small>
                 </button>
@@ -199,18 +297,6 @@ function HistoryRow({ result, expanded, onToggle }: { result: HistoryResult; exp
     </button>
     {expanded && result.reason !== null && <div className={styles.details}><strong>Needs-review reason</strong><span>{result.reason}</span></div>}
   </li>
-}
-
-function resolveRange(
-  preset: HistoryRangePreset,
-  customStart: string,
-  customEnd: string,
-): { preset: HistoryRangePreset; startDate: string; endDate: string } {
-  if (preset === 'custom') {
-    return { preset, startDate: customStart, endDate: customEnd }
-  }
-  const range = resolveHistoryPresetRange(preset)
-  return { preset, startDate: range.startDate, endDate: range.endDate }
 }
 
 function formatDate(value: string): string {

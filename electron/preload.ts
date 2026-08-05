@@ -18,9 +18,12 @@ import type {
   ManagedChromeViewport,
 } from '../src/types/managedChrome'
 import type {
+  HistoryAssetIdsRequest,
+  HistoryAssetIdsResult,
   HistoryApi,
   HistoryDateRequest,
   HistoryDateSummary,
+  HistoryDatesRequest,
   HistoryRangeRequest,
   HistoryRangeResult,
   HistoryResponse,
@@ -212,8 +215,11 @@ const historyApi: HistoryApi = {
   async getWeeklySummary() {
     return invokeHistory<WeeklyHistorySummary>(HISTORY_IPC_CHANNELS.weeklySummary)
   },
-  async getHistoryDates() {
-    return invokeHistory<HistoryDateSummary[]>(HISTORY_IPC_CHANNELS.dates)
+  async getHistoryDates(request) {
+    return invokeHistory<HistoryDateSummary[]>(
+      HISTORY_IPC_CHANNELS.dates,
+      sanitizeHistoryDatesRequest(request),
+    )
   },
   async getHistoryForDate(request) {
     return invokeHistory<HistoryRangeResult>(
@@ -225,6 +231,12 @@ const historyApi: HistoryApi = {
     return invokeHistory<HistoryRangeResult>(
       HISTORY_IPC_CHANNELS.range,
       sanitizeHistoryRangeRequest(request),
+    )
+  },
+  async getHistoryAssetIds(request) {
+    return invokeHistory<HistoryAssetIdsResult>(
+      HISTORY_IPC_CHANNELS.assetIds,
+      sanitizeHistoryAssetIdsRequest(request),
     )
   },
   onHistoryChanged(listener) {
@@ -285,6 +297,27 @@ function sanitizeHistoryDateRequest(request: HistoryDateRequest): HistoryDateReq
     outcome: request.outcome,
     limit: request.limit,
     offset: request.offset,
+  }
+}
+
+function sanitizeHistoryDatesRequest(request: HistoryDatesRequest): HistoryDatesRequest {
+  return {
+    startDate: request.startDate,
+    endDate: request.endDate,
+    preset: request.preset,
+  }
+}
+
+function sanitizeHistoryAssetIdsRequest(
+  request: HistoryAssetIdsRequest,
+): HistoryAssetIdsRequest {
+  return {
+    startDate: request.startDate,
+    endDate: request.endDate,
+    preset: request.preset,
+    search: request.search,
+    mode: request.mode,
+    outcome: request.outcome,
   }
 }
 

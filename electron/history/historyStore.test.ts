@@ -168,9 +168,68 @@ test('date history, search, mode, outcome, and local boundaries are applied', as
   assert.ok(response.ok)
   assert.equal(response.data.total, 1)
   assert.equal(response.data.results[0]?.assetId, 'IT2985567')
-  const dates = await store.getHistoryDates()
+  const dates = await store.getHistoryDates(request)
   assert.ok(dates.ok)
-  assert.equal(dates.data.length, 2)
+  assert.deepEqual(dates.data, [{ date: '2026-08-05', total: 1 }])
+})
+
+test('range-scoped dates and asset-ID exports share filters and result ordering', async (t) => {
+  const { store } = await fixture(t)
+  const august4 = new Date(Date.parse(localDateBounds('2026-08-04').start) + 60_000).toISOString()
+  const august5Early = new Date(Date.parse(localDateBounds('2026-08-05').start) + 60_000).toISOString()
+  const august5Late = new Date(Date.parse(localDateBounds('2026-08-05').start) + 120_000).toISOString()
+  const inputs = [
+    { assetId: 'IT4000001', mode: 'EOL', outcome: 'completed', finishedAt: august4 },
+    { assetId: 'IT5000001', mode: 'MRI_FAIL', outcome: 'needs_review', finishedAt: august5Early },
+    { assetId: 'IT5000002', mode: 'MRI_FAIL', outcome: 'completed', finishedAt: august5Late },
+  ] as const
+  for (const input of inputs) {
+    const runId = await store.createRun(input.mode, input.finishedAt)
+    assert.ok(runId !== null)
+    await store.recordAssetResult({
+      runId,
+      assetId: input.assetId,
+      mode: input.mode,
+      outcome: input.outcome,
+      reason: input.outcome === 'needs_review' ? 'review' : null,
+      startedAt: input.finishedAt,
+      finishedAt: input.finishedAt,
+    })
+  }
+
+  const range = parseHistoryRangeRequest({
+    preset: 'custom',
+    startDate: '2026-08-04',
+    endDate: '2026-08-05',
+  })
+  assert.ok(range)
+  const dates = await store.getHistoryDates(range)
+  assert.ok(dates.ok)
+  assert.deepEqual(dates.data, [
+    { date: '2026-08-05', total: 2 },
+    { date: '2026-08-04', total: 1 },
+  ])
+  const allAssetIds = await store.getHistoryAssetIds(range)
+  assert.deepEqual(allAssetIds.ok && allAssetIds.data.assetIds, [
+    'IT5000002',
+    'IT5000001',
+    'IT4000001',
+  ])
+
+  const filtered = parseHistoryRangeRequest({
+    preset: 'custom',
+    startDate: '2026-08-05',
+    endDate: '2026-08-05',
+    search: '5000',
+    mode: 'MRI_FAIL',
+    outcome: 'needs_review',
+  })
+  assert.ok(filtered)
+  const assetIds = await store.getHistoryAssetIds(filtered)
+  assert.deepEqual(assetIds.ok && assetIds.data, {
+    assetIds: ['IT5000001'],
+    complete: true,
+  })
 })
 
 test('change notification fires once only for a newly inserted result', async (t) => {

@@ -1,5 +1,7 @@
 import type {
+  HistoryAssetIdsRequest,
   HistoryDateRequest,
+  HistoryDatesRequest,
   HistoryOutcome,
   HistoryRangeRequest,
 } from '../../src/types/history'
@@ -32,6 +34,31 @@ export interface ValidatedHistoryRange {
 export function parseHistoryDateRequest(value: unknown): ValidatedHistoryRange | null {
   if (!isRecord(value) || !isValidLocalDate(value.date)) return null
   return parseRangeFields(value, value.date, value.date)
+}
+
+export function parseHistoryDatesRequest(value: unknown): ValidatedHistoryRange | null {
+  if (!isRecord(value)) return null
+  return parseHistoryRangeRequest({
+    startDate: value.startDate,
+    endDate: value.endDate,
+    preset: value.preset,
+    limit: 1,
+    offset: 0,
+  })
+}
+
+export function parseHistoryAssetIdsRequest(value: unknown): ValidatedHistoryRange | null {
+  if (!isRecord(value)) return null
+  return parseHistoryRangeRequest({
+    startDate: value.startDate,
+    endDate: value.endDate,
+    preset: value.preset,
+    search: value.search,
+    mode: value.mode,
+    outcome: value.outcome,
+    limit: 1,
+    offset: 0,
+  })
 }
 
 export function parseHistoryRangeRequest(value: unknown): ValidatedHistoryRange | null {
@@ -124,4 +151,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-export type { HistoryDateRequest, HistoryRangeRequest }
+export type {
+  HistoryAssetIdsRequest,
+  HistoryDateRequest,
+  HistoryDatesRequest,
+  HistoryRangeRequest,
+}
