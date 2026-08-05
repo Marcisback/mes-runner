@@ -1,30 +1,36 @@
-# React + TypeScript + Vite
+# MES Runner
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Electron, React, and TypeScript desktop automation for proven internal MES
+workflows through organization-managed Google Chrome.
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
-
-- Configure the top-level `parserOptions` property like this:
-
-```js
-export default {
-  // other rules...
-  parserOptions: {
-    ecmaVersion: 'latest',
-    sourceType: 'module',
-    project: ['./tsconfig.json', './tsconfig.node.json'],
-    tsconfigRootDir: __dirname,
-  },
-}
+```bash
+npm install
+npm run dev
 ```
 
-- Replace `plugin:@typescript-eslint/recommended` to `plugin:@typescript-eslint/recommended-type-checked` or `plugin:@typescript-eslint/strict-type-checked`
-- Optionally add `plugin:@typescript-eslint/stylistic-type-checked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and add `plugin:react/recommended` & `plugin:react/jsx-runtime` to the `extends` list
+The application owns managed Chrome, Playwright automation, and local SQLite
+history in the Electron main process. React communicates through typed preload
+APIs and never receives browser objects, SQL, or database handles.
+
+Local history is created automatically at
+`path.join(app.getPath('userData'), 'mes-runner.sqlite')`. It stores final
+completed and needs-review outcomes only. Credentials, cookies, screenshots,
+page content, and full diagnostics are not stored.
+
+## Validation
+
+```bash
+npm test
+npm run lint
+npx tsc --noEmit
+npx vite build
+npm run build
+```
+
+`npm run build` compiles the application and packages the SQLite native module.
+On the current macOS development machine, the final DMG step may fail in
+`hdiutil` after application packaging has succeeded.
+
+See [CLAUDE.md](./CLAUDE.md) for architecture and engineering requirements.

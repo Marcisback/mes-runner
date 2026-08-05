@@ -1,5 +1,12 @@
 # Logs
 logs
+!src/components/logs/
+src/components/logs/*
+!src/components/logs/LogsView.tsx
+!src/components/logs/LogsView.module.css
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.log
 npm-debug.log*
 yarn-debug.log*

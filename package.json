@@ -9,13 +9,14 @@
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "test": "node --test electron/workflows/*.test.ts src/lib/*.test.ts",
+    "test": "node --test electron/history/*.test.ts electron/workflows/*.test.ts src/lib/*.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {
     "playwright-core": "^1.62.1",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "sqlite3": "^5.1.7"
   },
   "devDependencies": {
     "@types/react": "^18.2.64",

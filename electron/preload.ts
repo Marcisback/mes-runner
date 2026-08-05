@@ -6,6 +6,7 @@ import {
 } from 'electron'
 import { MANAGED_CHROME_IPC_CHANNELS } from './managedChromeChannels'
 import { EOL_RUNNER_IPC_CHANNELS } from './eolRunnerChannels'
+import { HISTORY_IPC_CHANNELS } from './history/historyChannels'
 import type {
   EolStartRequest,
   EolRunnerApi,
@@ -18,6 +19,15 @@ import type {
   ManagedChromeState,
   ManagedChromeViewport,
 } from '../src/types/managedChrome'
+import type {
+  HistoryApi,
+  HistoryDateRequest,
+  HistoryDateSummary,
+  HistoryRangeRequest,
+  HistoryRangeResult,
+  HistoryResponse,
+  WeeklyHistorySummary,
+} from '../src/types/history'
 
 type ManagedChromeInvokeChannel =
   | typeof MANAGED_CHROME_IPC_CHANNELS.launch
@@ -177,6 +187,34 @@ const eolRunnerApi: EolRunnerApi = {
 
 contextBridge.exposeInMainWorld('eolRunner', eolRunnerApi)
 
+const historyApi: HistoryApi = {
+  async getWeeklySummary() {
+    return invokeHistory<WeeklyHistorySummary>(HISTORY_IPC_CHANNELS.weeklySummary)
+  },
+  async getHistoryDates() {
+    return invokeHistory<HistoryDateSummary[]>(HISTORY_IPC_CHANNELS.dates)
+  },
+  async getHistoryForDate(request) {
+    return invokeHistory<HistoryRangeResult>(
+      HISTORY_IPC_CHANNELS.forDate,
+      sanitizeHistoryDateRequest(request),
+    )
+  },
+  async getHistoryRange(request) {
+    return invokeHistory<HistoryRangeResult>(
+      HISTORY_IPC_CHANNELS.range,
+      sanitizeHistoryRangeRequest(request),
+    )
+  },
+  onHistoryChanged(listener) {
+    const wrappedListener = (): void => listener()
+    ipcRenderer.on(HISTORY_IPC_CHANNELS.changed, wrappedListener)
+    return () => ipcRenderer.off(HISTORY_IPC_CHANNELS.changed, wrappedListener)
+  },
+}
+
+contextBridge.exposeInMainWorld('mesHistory', historyApi)
+
 contextBridge.exposeInMainWorld('mesClipboard', {
   async writeText(text: string): Promise<boolean> {
     if (typeof text !== 'string' || text.length === 0 || text.length > 200_000) {
@@ -198,6 +236,52 @@ async function invokeState(
     errorMessage: 'Managed Chrome returned an invalid state.',
     generation: 0,
     viewport: { width: 1600, height: 1000 },
+  }
+}
+
+async function invokeHistory<T>(
+  channel: string,
+  payload?: unknown,
+): Promise<HistoryResponse<T>> {
+  const response: unknown = await ipcRenderer.invoke(channel, payload)
+  if (
+    isRecord(response) &&
+    typeof response.ok === 'boolean' &&
+    isRecord(response.health) &&
+    typeof response.health.available === 'boolean' &&
+    (response.health.message === null || typeof response.health.message === 'string')
+  ) {
+    return response as unknown as HistoryResponse<T>
+  }
+  return {
+    ok: false,
+    data: null,
+    health: { available: false, message: 'Local history is unavailable.' },
+    error: 'Local history returned an invalid response.',
+  }
+}
+
+function sanitizeHistoryDateRequest(request: HistoryDateRequest): HistoryDateRequest {
+  return {
+    date: request.date,
+    search: request.search,
+    mode: request.mode,
+    outcome: request.outcome,
+    limit: request.limit,
+    offset: request.offset,
+  }
+}
+
+function sanitizeHistoryRangeRequest(request: HistoryRangeRequest): HistoryRangeRequest {
+  return {
+    startDate: request.startDate,
+    endDate: request.endDate,
+    preset: request.preset,
+    search: request.search,
+    mode: request.mode,
+    outcome: request.outcome,
+    limit: request.limit,
+    offset: request.offset,
   }
 }
 

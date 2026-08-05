@@ -1,6 +1,7 @@
 import { EngineProvider } from './state/EngineProvider'
 import { WorkspaceProvider } from './state/WorkspaceProvider'
 import { AppShell } from './components/shell/AppShell'
+import { HistoryProvider } from './state/HistoryProvider'
 
 /**
  * Application root. Provides the shared engine/managed-Chrome state and the
@@ -10,9 +11,11 @@ import { AppShell } from './components/shell/AppShell'
 function App() {
   return (
     <EngineProvider>
-      <WorkspaceProvider>
-        <AppShell />
-      </WorkspaceProvider>
+      <HistoryProvider>
+        <WorkspaceProvider>
+          <AppShell />
+        </WorkspaceProvider>
+      </HistoryProvider>
     </EngineProvider>
   )
 }

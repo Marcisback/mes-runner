@@ -1,68 +1,59 @@
-import { useEngine } from '../../state/engineContext'
-import { deriveTodayProgress, isEngineActive } from '../../lib/dashboard'
+import { useHistory } from '../../state/historyContext'
 import { Card } from '../common/Card'
 import { CircularProgress } from '../common/CircularProgress'
 import styles from './TodayProgressCard.module.css'
 
-const CATEGORY_TONE_CLASS = {
-  success: styles.toneSuccess,
-  danger: styles.toneDanger,
-  neutral: styles.toneNeutral,
-} as const
-
-/**
- * Large progress card summarizing the current session: a circular completion
- * ring with the completed/total count at its center, plus per-mode category
- * totals. All values derive from the live engine snapshot — there is no
- * historical persistence, so an empty session shows an honest empty state.
- */
 export function TodayProgressCard() {
-  const { snapshot } = useEngine()
-  const progress = deriveTodayProgress(snapshot)
-  const active = isEngineActive(snapshot)
+  const { weekly, health, loading } = useHistory()
+  const total = weekly?.total ?? 0
+  const categories = weekly === null
+    ? []
+    : [
+        { key: 'MRI', label: 'MRI', count: weekly.byMode.MRI, className: styles.toneSuccess },
+        { key: 'MRI_FAIL', label: 'MRI Fail', count: weekly.byMode.MRI_FAIL, className: styles.toneDanger },
+        { key: 'EOL', label: 'EOL', count: weekly.byMode.EOL, className: styles.toneNeutral },
+        { key: 'NEEDS_REVIEW', label: 'Needs Review', count: weekly.needsReview, className: styles.toneDanger },
+      ]
 
   return (
-    <Card label="Today's Progress" className={styles.card}>
+    <Card label="Weekly Progress" className={styles.card}>
+      {!health.available ? (
+        <div className={styles.unavailable} role="status">
+          <strong>History unavailable</strong>
+          <span>{health.message ?? 'Local history could not be loaded.'}</span>
+        </div>
+      ) : (
       <div className={styles.body}>
         <div className={styles.progressRing}>
           <CircularProgress
-            percent={progress.percent}
+            percent={total > 0 ? 100 : 0}
             size={220}
             thickness={16}
-            active={active}
-            label={`Today's progress: ${progress.completed} of ${progress.total} assets complete`}
+            active={false}
+            label={`${total} assets run this week`}
           >
-            <div className={styles.centerCount}>
-              {progress.completed} / {progress.total}
-            </div>
+            <div className={styles.centerCount}>{loading ? '—' : total}</div>
             <div className={styles.centerLabel}>
-              {progress.hasData
-                ? `${progress.percent}% complete`
-                : 'No runs yet'}
+              {total === 1 ? 'asset run' : 'assets run'}
             </div>
           </CircularProgress>
         </div>
 
         <dl className={styles.categories}>
-          {progress.categories.map((category) => (
+          {categories.map((category) => (
             <div key={category.key} className={styles.category}>
               <dt className={styles.categoryLabel}>{category.label}</dt>
-              <dd
-                className={`${styles.categoryValue} ${
-                  CATEGORY_TONE_CLASS[category.tone]
-                }`}
-              >
+              <dd className={`${styles.categoryValue} ${category.className}`}>
                 {category.count}
               </dd>
             </div>
           ))}
         </dl>
       </div>
-
-      {!progress.hasData && (
+      )}
+      {health.available && !loading && total === 0 && (
         <p className={styles.emptyNote}>
-          Category totals reflect the current session and populate as runners
-          complete assets.
+          No assets have been recorded this week.
         </p>
       )}
     </Card>

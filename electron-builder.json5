@@ -3,6 +3,10 @@
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
   "appId": "com.mesrunner.app",
   "asar": true,
+  "asarUnpack": [
+    "node_modules/sqlite3/build/Release/*.node"
+  ],
+  "npmRebuild": false,
   "productName": "MES Runner",
   "directories": {
     "output": "release/${version}"
@@ -10,7 +14,10 @@
   "files": [
     "dist",
     "dist-electron",
-    "node_modules/playwright-core/**/*"
+    "node_modules/playwright-core/**/*",
+    "node_modules/sqlite3/**/*",
+    "node_modules/bindings/**/*",
+    "node_modules/file-uri-to-path/**/*"
   ],
   "mac": {
     "target": [

@@ -14,7 +14,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['playwright-core'],
+              external: ['playwright-core', 'sqlite3'],
             },
           },
         },

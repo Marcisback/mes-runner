@@ -8,6 +8,7 @@ import { EolRunner } from './eolRunner'
 import { EOL_RUNNER_IPC_CHANNELS } from './eolRunnerChannels'
 import { ManagedChromeController } from './managedChromeController'
 import { MANAGED_CHROME_IPC_CHANNELS } from './managedChromeChannels'
+import { LocalHistoryStore } from './history/historyStore'
 
 const controllers = new Map<number, ManagedChromeController>()
 const eolRunners = new Map<number, EolRunner>()
@@ -16,14 +17,15 @@ let eolRegistered = false
 
 export function registerManagedChromeWindow(
   hostWindow: BrowserWindow,
+  historyStore: LocalHistoryStore,
 ): ManagedChromeController {
   const controller = new ManagedChromeController(hostWindow)
-  const eolRunner = new EolRunner(hostWindow, controller)
+  const eolRunner = new EolRunner(hostWindow, controller, historyStore)
   controllers.set(hostWindow.id, controller)
   eolRunners.set(hostWindow.id, eolRunner)
 
   hostWindow.once('close', () => {
-    void controller.dispose()
+    void Promise.all([eolRunner.dispose(), controller.dispose()])
   })
 
   hostWindow.once('closed', () => {

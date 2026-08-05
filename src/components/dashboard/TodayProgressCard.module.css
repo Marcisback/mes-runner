@@ -87,6 +87,19 @@
   color: var(--color-text-subtle);
 }
 
+.unavailable {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 150px;
+  color: var(--color-text-muted);
+}
+
+.unavailable strong {
+  color: var(--color-warning);
+}
+
 /* Drop nonessential explanatory copy before operational values lose room. */
 @media (max-height: 780px) {
   .emptyNote {

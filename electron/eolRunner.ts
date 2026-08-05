@@ -1,6 +1,8 @@
 import { type BrowserWindow } from 'electron'
 import { type Page } from 'playwright-core'
 import { EOL_RUNNER_IPC_CHANNELS } from './eolRunnerChannels'
+import { LocalHistoryStore } from './history/historyStore'
+import { toHistoryOutcome } from './history/historyOutcome'
 import { ManagedChromeController } from './managedChromeController'
 import {
   AssetSkipError,
@@ -49,10 +51,13 @@ export class EolRunner {
   private lastCompletedStep: string | null = null
   private authenticationWaitLogged = false
   private readonly queueHandoff = new RuntimeQueueHandoff()
+  private historyRunId: number | null = null
+  private historyRunFinalStatus: 'completed' | 'stopped' | 'disconnected' | 'error' = 'completed'
 
   constructor(
     private readonly hostWindow: BrowserWindow,
     private readonly managedChrome: ManagedChromeController,
+    private readonly historyStore: LocalHistoryStore,
   ) {
     this.managedChrome.onAutomationSessionInvalidated((reason) => {
       this.clearQueueHandoff(reason)
@@ -61,6 +66,14 @@ export class EolRunner {
 
   getSnapshot(): EolRunnerSnapshot {
     return this.snapshot
+  }
+
+  async dispose(): Promise<void> {
+    if (this.runInProgress !== null) {
+      this.stopRequested = true
+      this.historyRunFinalStatus = 'stopped'
+    }
+    await this.finalizeHistoryRun()
   }
 
   async start(payload: unknown): Promise<EolRunnerSnapshot> {
@@ -108,6 +121,14 @@ export class EolRunner {
       diagnostics: this.diagnostics,
     }
     this.logDiagnostic('info', 'Run started.')
+    this.historyRunFinalStatus = 'completed'
+    this.historyRunId = await this.historyStore.createRun(
+      request.options.mode,
+      new Date().toISOString(),
+    )
+    if (this.historyRunId === null) {
+      this.logPersistenceUnavailable('Run history could not be started.')
+    }
     const terminalReceipt = this.getValidQueueHandoff()
     if (terminalReceipt !== null) {
       this.logDiagnostic('info', 'New run started with owned terminal receipt.', {
@@ -150,6 +171,7 @@ export class EolRunner {
     }
 
     this.stopRequested = true
+    this.historyRunFinalStatus = 'stopped'
     this.clearQueueHandoff('Stop Safely invalidated the queue handoff.')
     this.logDiagnostic('info', 'Stop Safely requested; no new workflow action will begin.')
 
@@ -200,8 +222,10 @@ export class EolRunner {
         errorClass: error instanceof Error ? error.name : 'UnknownError',
         reason: sanitizeWorkflowReason(error),
       })
+      this.historyRunFinalStatus = 'error'
       this.setError(getSafeErrorMessage(error))
     } finally {
+      await this.finalizeHistoryRun()
       this.snapshot = { ...this.snapshot, currentAssetId: null }
       this.emitSnapshot()
     }
@@ -211,11 +235,15 @@ export class EolRunner {
     asset: EolAssetResult,
     options: WorkflowOptions,
   ): Promise<boolean> {
+    const assetStartedAt = new Date().toISOString()
     const page = this.getReadyPage()
 
     if (page === null) {
       this.clearQueueHandoff('Browser unavailability invalidated the queue handoff.')
-      this.updateAsset(asset.id, 'needs-review', this.getUnavailableReason())
+      const reason = this.getUnavailableReason()
+      this.updateAsset(asset.id, 'needs-review', reason)
+      this.historyRunFinalStatus = reason === 'browser-disconnected' ? 'disconnected' : 'error'
+      await this.persistAssetResult(asset.id, 'needs-review', reason, assetStartedAt)
       this.setState('stopping', 'Managed Chrome is unavailable.')
       return false
     }
@@ -237,6 +265,7 @@ export class EolRunner {
     try {
       const completion = await processAssetWorkflow(runtime)
       this.updateAsset(asset.id, 'completed', null)
+      await this.persistAssetResult(asset.id, 'completed', null, assetStartedAt)
       this.logDiagnostic('info', 'Asset completed.', { assetId: asset.id })
       const identity = this.managedChrome.getAutomationSessionIdentity()
       const authorization = identity === null
@@ -262,6 +291,8 @@ export class EolRunner {
       if (error instanceof StopRequestedError) {
         this.clearQueueHandoff('Stop Safely invalidated the queue handoff.')
         this.updateAsset(asset.id, 'needs-review', 'stopped', error)
+        this.historyRunFinalStatus = 'stopped'
+        await this.persistAssetResult(asset.id, 'needs-review', 'stopped', assetStartedAt)
         this.logDiagnostic('warning', 'Asset stopped at a safe action boundary.', {
           assetId: asset.id,
           errorClass: error.name,
@@ -274,6 +305,7 @@ export class EolRunner {
       if (error instanceof AssetSkipError) {
         this.clearQueueHandoff('Asset skip invalidated the queue handoff.')
         this.updateAsset(asset.id, 'skipped', error.reason, error)
+        await this.persistAssetResult(asset.id, 'skipped', error.reason, assetStartedAt)
         this.logDiagnostic('warning', 'Asset skipped.', {
           assetId: asset.id,
           errorClass: error.name,
@@ -293,6 +325,11 @@ export class EolRunner {
         this.clearQueueHandoff('Workflow error invalidated the queue handoff.')
         const reason = sanitizeWorkflowReason(error)
         this.updateAsset(asset.id, 'needs-review', reason, error)
+        this.historyRunFinalStatus =
+          error instanceof BrowserDisconnectedError || isBrowserDisconnectedDiagnostic(error)
+            ? 'disconnected'
+            : 'error'
+        await this.persistAssetResult(asset.id, 'needs-review', reason, assetStartedAt)
         this.logDiagnostic('error', 'Asset needs review.', {
           assetId: asset.id,
           errorClass: error instanceof Error ? error.name : 'WorkflowError',
@@ -303,6 +340,13 @@ export class EolRunner {
       }
 
       this.updateAsset(asset.id, 'needs-review', 'unexpected-error', error)
+      this.historyRunFinalStatus = 'error'
+      await this.persistAssetResult(
+        asset.id,
+        'needs-review',
+        'unexpected-error',
+        assetStartedAt,
+      )
       this.clearQueueHandoff('Unexpected error invalidated the queue handoff.')
       this.logDiagnostic('error', 'Unexpected asset error.', {
         assetId: asset.id,
@@ -426,6 +470,49 @@ export class EolRunner {
   private clearQueueHandoff(reason: string): void {
     if (!this.queueHandoff.clear()) return
     this.logDiagnostic('warning', 'Terminal receipt invalidated.', { reason })
+  }
+
+  private async persistAssetResult(
+    assetId: string,
+    state: EolAssetResult['state'],
+    reason: string | null,
+    startedAt: string,
+  ): Promise<void> {
+    const outcome = toHistoryOutcome(state)
+    if (this.historyRunId === null || outcome === null) return
+    await this.historyStore.recordAssetResult({
+      runId: this.historyRunId,
+      assetId,
+      mode: this.snapshot.mode,
+      outcome,
+      reason,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+    })
+    if (!this.historyStore.getHealth().available) {
+      this.logPersistenceUnavailable('Final asset history could not be saved.')
+    }
+  }
+
+  private async finalizeHistoryRun(): Promise<void> {
+    const runId = this.historyRunId
+    this.historyRunId = null
+    if (runId === null) return
+    await this.historyStore.finalizeRun(
+      runId,
+      this.historyRunFinalStatus,
+      new Date().toISOString(),
+    )
+    if (!this.historyStore.getHealth().available) {
+      this.logPersistenceUnavailable('Run history could not be finalized.')
+    }
+  }
+
+  private logPersistenceUnavailable(message: string): void {
+    this.logDiagnostic('warning', message, {
+      errorClass: 'HistoryPersistenceError',
+      reason: 'Local history is unavailable; automation was not retried.',
+    })
   }
 
   private getValidQueueHandoff(): ReturnType<RuntimeQueueHandoff['peek']> {

@@ -2,6 +2,8 @@ import { app, BrowserWindow } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { registerManagedChromeWindow } from './managedChromeIpc'
+import { registerHistoryIpc } from './history/historyIpc'
+import { LocalHistoryStore } from './history/historyStore'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -24,6 +26,7 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 let win: BrowserWindow | null
+let historyStore: LocalHistoryStore | null = null
 
 function createWindow() {
   const mainWindow = new BrowserWindow({
@@ -41,7 +44,8 @@ function createWindow() {
   })
 
   win = mainWindow
-  registerManagedChromeWindow(mainWindow)
+  if (historyStore === null) throw new Error('History store was not initialized.')
+  registerManagedChromeWindow(mainWindow, historyStore)
 
   mainWindow.once('closed', () => {
     if (win === mainWindow) {
@@ -73,4 +77,11 @@ app.on('activate', () => {
   }
 })
 
-app.whenReady().then(createWindow)
+void app.whenReady().then(async () => {
+  historyStore = new LocalHistoryStore(
+    path.join(app.getPath('userData'), 'mes-runner.sqlite'),
+  )
+  await historyStore.initialize()
+  registerHistoryIpc(historyStore)
+  createWindow()
+})

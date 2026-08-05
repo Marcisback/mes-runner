@@ -39,6 +39,12 @@ NNNN-short-title.md      e.g. 0001-embedded-browser-architecture.md
 
 Use a zero-padded, incrementing number so ordering is stable.
 
+## Records
+
+- [RFC 0001: Embedded Browser Foundation](./0001-embedded-browser-foundation.md) — Superseded
+- [RFC 0002: Managed Chrome Integration](./0002-managed-chrome-integration.md) — Accepted
+- [RFC 0003: Local History Persistence](./0003-local-history-persistence.md) — Accepted
+
 ## Related
 
 - [`../decisions/`](../decisions/) — the accepted outcome after implementation.

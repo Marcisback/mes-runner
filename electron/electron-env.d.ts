@@ -3,6 +3,7 @@
 import type { ManagedChromeApi } from '../src/types/managedChrome'
 import type { EolRunnerApi } from '../src/types/eolRunner'
 import type { ClipboardApi } from '../src/types/clipboard'
+import type { HistoryApi } from '../src/types/history'
 
 declare global {
   namespace NodeJS {
@@ -30,6 +31,7 @@ declare global {
     managedChrome: ManagedChromeApi
     eolRunner: EolRunnerApi
     mesClipboard: ClipboardApi
+    mesHistory: HistoryApi
   }
 }
 

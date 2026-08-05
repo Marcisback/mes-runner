@@ -1,0 +1,46 @@
+.view { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: var(--space-3); width: 100%; max-width: 1500px; height: 100%; min-width: 0; min-height: 0; margin: 0 auto; padding: var(--space-4) var(--space-5); overflow: hidden; }
+.header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.title { font-size: var(--font-size-xl); font-weight: 800; }
+.subtitle { margin-top: var(--space-1); font-size: var(--font-size-sm); color: var(--color-text-muted); }
+.viewTabs, .segmented { display: inline-flex; border: 1px solid var(--color-border); border-radius: var(--radius-sm); overflow: hidden; }
+.tab, .tabActive, .segment, .segmentActive { min-height: 34px; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-sm); font-weight: 600; color: var(--color-text-muted); background: var(--color-surface); border: 0; border-right: 1px solid var(--color-border); cursor: pointer; }
+.tab:last-child, .tabActive:last-child, .segment:last-child, .segmentActive:last-child { border-right: 0; }
+.tabActive, .segmentActive { color: var(--color-text); background: var(--color-accent-soft); }
+.toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.toolbar input, .toolbar select { min-height: 36px; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-sm); color: var(--color-text); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.search { flex: 1 1 210px; min-width: 160px; }
+.dateRange { display: flex; align-items: center; gap: var(--space-2); color: var(--color-text-subtle); }
+.content { display: grid; grid-template-columns: minmax(190px, 240px) minmax(0, 1fr); gap: var(--space-3); min-height: 0; overflow: hidden; }
+.dates { min-height: 0; padding: var(--space-3); overflow-y: auto; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.dates h2 { margin-bottom: var(--space-2); font-size: var(--font-size-sm); }
+.dates p { font-size: var(--font-size-sm); color: var(--color-text-subtle); }
+.dateButton, .dateActive { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: var(--space-2); text-align: left; font: inherit; font-size: var(--font-size-sm); color: var(--color-text); background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
+.dateButton:hover { background: var(--color-surface-raised); }
+.dateActive { background: var(--color-accent-soft); border-color: var(--color-accent); }
+.dateButton small, .dateActive small { color: var(--color-text-subtle); }
+.results { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--space-3); min-width: 0; min-height: 0; }
+.summary { display: grid; grid-template-columns: repeat(6, minmax(80px, 1fr)); gap: var(--space-2); margin: 0; }
+.summary div { padding: var(--space-2) var(--space-3); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.summary dt { font-size: var(--font-size-xs); color: var(--color-text-subtle); }
+.summary dd { margin: var(--space-1) 0 0; font-size: var(--font-size-lg); font-weight: 800; color: var(--color-text); }
+.tableWrap { min-height: 0; overflow: auto; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.tableHeader, .row { display: grid; grid-template-columns: 80px minmax(110px, 1.2fr) 90px 110px minmax(150px, 2fr); gap: var(--space-3); align-items: center; }
+.tableHeader { position: sticky; top: 0; z-index: 1; padding: var(--space-3); font-size: var(--font-size-xs); font-weight: 700; color: var(--color-text-subtle); background: var(--color-surface); border-bottom: 1px solid var(--color-border); }
+.rows { margin: 0; padding: 0; list-style: none; }
+.row { width: 100%; padding: var(--space-3); text-align: left; font: inherit; font-size: var(--font-size-sm); color: var(--color-text-muted); background: transparent; border: 0; border-bottom: 1px solid var(--color-border); cursor: pointer; }
+.row:hover { background: var(--color-surface-raised); }
+.row strong { color: var(--color-text); overflow-wrap: anywhere; }
+.completed, .needsReview { width: fit-content; padding: 2px var(--space-2); font-size: var(--font-size-xs); font-weight: 700; border: 1px solid; border-radius: var(--radius-sm); }
+.completed { color: var(--color-success); background: var(--color-success-soft); }
+.needsReview { color: var(--color-warning); background: var(--color-warning-soft); }
+.reason { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.details { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-4); font-size: var(--font-size-sm); color: var(--color-text-muted); background: var(--color-surface-sunken); border-bottom: 1px solid var(--color-border); }
+.details strong { color: var(--color-warning); }
+.state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); min-height: 180px; padding: var(--space-5); text-align: center; color: var(--color-text-muted); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.state strong { color: var(--color-warning); }
+.diagnostics { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; overflow: hidden; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.diagnosticsHeader { padding: var(--space-3); font-size: var(--font-size-sm); font-weight: 700; border-bottom: 1px solid var(--color-border); }
+.diagnostics pre { min-height: 0; margin: 0; padding: var(--space-3); overflow: auto; white-space: pre-wrap; color: var(--color-text); background: var(--color-surface-sunken); }
+.tab:focus-visible, .tabActive:focus-visible, .segment:focus-visible, .segmentActive:focus-visible, .dateButton:focus-visible, .dateActive:focus-visible, .row:focus-visible, .toolbar input:focus-visible, .toolbar select:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+@media (max-width: 900px) { .content { grid-template-columns: minmax(150px, 190px) minmax(0, 1fr); } .summary { grid-template-columns: repeat(3, minmax(80px, 1fr)); } .tableHeader, .row { grid-template-columns: 70px minmax(100px, 1fr) 80px 100px; } .tableHeader span:last-child, .row .reason { display: none; } }
+

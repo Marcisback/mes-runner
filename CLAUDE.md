@@ -12,8 +12,9 @@ MES Runner is a production-quality desktop automation platform built with
 Electron, React, TypeScript, and Playwright browser-control APIs. It uses the
 installed organization-managed Google Chrome application as the MES browser and
 drives the proven EOL and MRI workflows through runtime-observed, guarded
-transitions. Persistent workflow storage, restart/crash recovery, and
-auto-updating remain planned.
+transitions. Final asset outcomes are persisted locally for Dashboard and
+History reporting. Persistent workflow checkpoints, restart/crash recovery,
+and auto-updating remain planned.
 
 Today the repository contains a working desktop runner, managed-Chrome browser
 foundation, CDP screencast surface, and runtime-aware automation for the proven
@@ -93,9 +94,21 @@ the precise boundary between implemented, validated, and planned behavior.
   and keeps bounded sanitized diagnostics in memory. Runtime progress is also
   memory-only; application restart recovery and persistent workflow checkpoints
   are not implemented.
+- **Local history persistence** (`electron/history/`) — main-process-owned
+  SQLite storage at `path.join(app.getPath("userData"), "mes-runner.sqlite")`.
+  Transactional versioned migrations create run and final asset-result records;
+  only completed and needs-review outcomes are stored. UTC timestamps are
+  queried through local calendar boundaries. Foreign keys and WAL mode are
+  enabled, writes are parameterized and idempotent, and storage failures never
+  replay MES actions. Persistent workflow checkpoints remain unimplemented.
+- **History IPC** (`electron/history/historyIpc.ts`, `electron/preload.ts`) —
+  validates bounded date/range/filter requests and exposes only typed summaries,
+  results, health, and invalidation events. SQL, database handles, and database
+  paths remain in the main process.
 - **React renderer** — dashboard, runner workspace, streamed MES surface,
-  contextual runner controls, bounded diagnostics view, result history, and
-  settings presentation. Automation policy remains in the main process.
+  contextual runner controls, bounded diagnostics, persisted weekly Dashboard
+  totals, date-oriented History, and settings presentation. Automation and
+  persistence policy remain in the main process.
 - **Styling** — plain CSS + CSS Modules, driven by theme tokens in
   `src/styles/theme.css`; global reset in `src/styles/global.css`.
 - **Security posture** — explicit host-window `contextIsolation` on and
@@ -104,9 +117,15 @@ the precise boundary between implemented, validated, and planned behavior.
   workflow automation but does not spoof browser identity, bypass managed
   controls, automate credentials or YubiKey authentication, expose CDP or
   Playwright to React, or access cookies and tokens.
+  Local history stores only asset IDs, canonical modes, final outcomes,
+  sanitized needs-review reasons, and UTC timestamps. It does not store page
+  content, screenshots, credentials, cookies, tokens, profile paths, locations,
+  or full diagnostic logs.
 - **Tooling** — Vite + `vite-plugin-electron`, TypeScript (strict), ESLint,
-  `playwright-core` for installed-Chrome control, `electron-builder` producing
-  per-platform installers.
+  `playwright-core` for installed-Chrome control, `sqlite3` for local history,
+  and `electron-builder` producing per-platform installers with the SQLite
+  ABI-stable Node-API binary preserved without an Electron-specific rebuild and
+  unpacked from ASAR.
 - **Automated validation** — Node test coverage for pure workflow policy and
   supporting logic, strict TypeScript, ESLint, and Vite builds. Phase 1 runtime
   awareness passes automated validation but still requires approved manual
@@ -119,8 +138,8 @@ The following are goals, not current behavior. Do not reference them as if
 implemented:
 
 - Persistent workflow checkpoints and restart/crash recovery.
-- Persistent run history or application storage beyond the dedicated Chrome
-  profile.
+- Persistent workflow checkpoints or restart recovery. Historical final
+  outcomes do not provide workflow resumption.
 - Verification or redesign of the Repair workflow.
 - Production approval of Phase 1 runtime state awareness after controlled live
   MES testing with approved assets.
@@ -190,7 +209,7 @@ Whenever a completed feature changes the system, update this section so future c
 | Build          | Vite + `vite-plugin-electron`, `electron-builder`   | GitHub Actions CI/CD                     |
 | Styling        | Plain CSS + CSS Modules + theme tokens              | —                                        |
 | Automation     | Managed Chrome, CDP screencast, typed runtime observer/reconciliation via `playwright-core` | Persistent restart recovery; verified Repair |
-| Persistence    | Dedicated Chrome profile; bounded runtime state and diagnostics in memory | Persistent checkpoints and run history |
+| Persistence    | Dedicated Chrome profile; main-process SQLite final-outcome history; runtime checkpoints and diagnostics in memory | Persistent workflow checkpoints/restart recovery |
 | Quality        | Node tests, ESLint, strict TypeScript, Vite builds   | Non-production MES integration/e2e tests |
 
 **No Tailwind. No UI component framework** unless explicitly approved via RFC.
@@ -211,6 +230,7 @@ mes-runner/
 │   │                         # Managed Chrome IPC channel constants
 │   ├── managedChromeIpc.ts  # Typed managed Chrome IPC registration
 │   ├── eolRunner.ts         # Sequential runner and bounded diagnostics
+│   ├── history/             # SQLite store, migrations, validation, IPC/tests
 │   ├── workflows/           # Observer, reconciliation, actions, detectors/tests
 │   ├── preload.ts          # contextBridge preload
 │   └── electron-env.d.ts   # Electron/renderer type declarations
@@ -218,6 +238,7 @@ mes-runner/
 │   ├── main.tsx            # React entry
 │   ├── App.tsx             # Composes the shell
 │   ├── components/         # Dashboard, runner, shell, settings, common UI
+│   │   └── logs/           # Persisted History and session diagnostics views
 │   ├── state/              # Renderer workspace and engine providers
 │   ├── lib/                # Pure renderer derivations and tests
 │   ├── types/              # Shared renderer/preload TypeScript contracts
@@ -330,6 +351,8 @@ The codebase—not previous conversations—is the source of truth.
 - The renderer communicates only through a **typed preload bridge**.
 - **Never expose raw Electron APIs** to the renderer; expose narrow, typed
   functions instead.
+- SQLite connections, SQL, migrations, and database paths are main-process
+  only. Renderer history access must remain validated and typed through preload.
 
 ## Styling Rules
 
@@ -353,6 +376,8 @@ Before finishing any task, verify:
 - [ ] Lint passes (`npm run lint`)
 - [ ] Build succeeds (`npm run build`)
 - [ ] Tests pass (when a test suite exists)
+- [ ] Native SQLite loads under development Node and Electron, and packaged
+      builds contain its unpacked `.node` binary when persistence changes
 - [ ] Documentation reviewed (see [Documentation Workflow](#documentation-workflow))
 - [ ] RFC need evaluated (see [RFC Policy](#rfc-policy))
 - [ ] ADR need evaluated (see [ADR Policy](#adr-policy))
