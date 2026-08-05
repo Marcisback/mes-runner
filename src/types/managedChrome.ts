@@ -55,7 +55,6 @@ export interface ManagedChromeApi {
   stop(): Promise<ManagedChromeState>
   getState(): Promise<ManagedChromeState>
   selectRunnerStream(runnerId: import('./eolRunner').RunnerId | null): Promise<boolean>
-  setViewport(runnerId: import('./eolRunner').RunnerId, viewport: ManagedChromeViewport): void
   mouseMove(runnerId: import('./eolRunner').RunnerId, point: ManagedChromePoint): void
   mouseClick(runnerId: import('./eolRunner').RunnerId, point: ManagedChromePoint): void
   mouseWheel(runnerId: import('./eolRunner').RunnerId, input: ManagedChromeWheelInput): void

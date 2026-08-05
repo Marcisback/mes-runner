@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "test": "node --test electron/history/*.test.ts electron/workflows/*.test.ts src/lib/*.test.ts",
+    "test": "node --test electron/*.test.ts electron/history/*.test.ts electron/workflows/*.test.ts src/lib/*.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -31,8 +31,7 @@
     "eslint-plugin-react-refresh": "^0.4.5",
     "typescript": "^5.2.2",
     "vite": "^5.1.6",
-    "vite-plugin-electron": "^0.28.6",
-    "vite-plugin-electron-renderer": "^0.14.5"
+    "vite-plugin-electron": "^0.28.6"
   },
   "main": "dist-electron/main.js"
 }

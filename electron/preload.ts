@@ -1,18 +1,13 @@
-import {
-  clipboard,
-  contextBridge,
-  ipcRenderer,
-  type IpcRendererEvent,
-} from 'electron'
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { MANAGED_CHROME_IPC_CHANNELS } from './managedChromeChannels'
 import { EOL_RUNNER_IPC_CHANNELS } from './eolRunnerChannels'
 import { HISTORY_IPC_CHANNELS } from './history/historyChannels'
 import type {
-  EolStartRequest,
   EolRunnerApi,
   EolRunnerSnapshot,
   RunnerId,
   RunnerOperationResult,
+  RunnerRemovedEvent,
   RunnerSnapshot,
   WorkflowMode,
 } from '../src/types/eolRunner'
@@ -31,6 +26,7 @@ import type {
   HistoryResponse,
   WeeklyHistorySummary,
 } from '../src/types/history'
+import { CLIPBOARD_WRITE_TEXT_CHANNEL } from './clipboardChannels.ts'
 
 type ManagedChromeInvokeChannel =
   | typeof MANAGED_CHROME_IPC_CHANNELS.launch
@@ -61,9 +57,6 @@ const managedChromeApi: ManagedChromeApi = {
   },
   async selectRunnerStream(runnerId) {
     return Boolean(await ipcRenderer.invoke(MANAGED_CHROME_IPC_CHANNELS.selectRunnerStream, runnerId))
-  },
-  setViewport(runnerId, viewport) {
-    sendViewport(MANAGED_CHROME_IPC_CHANNELS.setViewport, runnerId, viewport)
   },
   mouseMove(runnerId, point) {
     sendPoint(MANAGED_CHROME_IPC_CHANNELS.mouseMove, runnerId, point)
@@ -205,7 +198,8 @@ const eolRunnerApi: EolRunnerApi = {
   },
   onRunnerRemoved(listener) {
     const wrappedListener = (_event: IpcRendererEvent, payload: unknown): void => {
-      if (isRunnerId(payload)) listener(payload)
+      const removed = parseRunnerRemovedEvent(payload)
+      if (removed !== null) listener(removed)
     }
     ipcRenderer.on(EOL_RUNNER_IPC_CHANNELS.removed, wrappedListener)
     return () => ipcRenderer.off(EOL_RUNNER_IPC_CHANNELS.removed, wrappedListener)
@@ -244,12 +238,7 @@ contextBridge.exposeInMainWorld('mesHistory', historyApi)
 
 contextBridge.exposeInMainWorld('mesClipboard', {
   async writeText(text: string): Promise<boolean> {
-    if (typeof text !== 'string' || text.length === 0 || text.length > 200_000) {
-      return false
-    }
-
-    clipboard.writeText(text)
-    return true
+    return Boolean(await ipcRenderer.invoke(CLIPBOARD_WRITE_TEXT_CHANNEL, text))
   },
 })
 
@@ -412,18 +401,6 @@ function isPoint(value: unknown): value is { x: number; y: number } {
   )
 }
 
-function sendViewport(
-  channel: typeof MANAGED_CHROME_IPC_CHANNELS.setViewport,
-  runnerId: RunnerId,
-  viewport: ManagedChromeViewport,
-): void {
-  const parsedViewport = parseViewport(viewport)
-
-  if (parsedViewport !== null) {
-    ipcRenderer.send(channel, { runnerId, value: parsedViewport })
-  }
-}
-
 function sendPoint(
   channel:
     | typeof MANAGED_CHROME_IPC_CHANNELS.mouseMove
@@ -509,6 +486,8 @@ function parseRunnerSnapshot(payload: unknown): RunnerSnapshot | null {
     !isRunnerId(payload.runnerId) ||
     (payload.slot !== 1 && payload.slot !== 2 && payload.slot !== 3) ||
     typeof payload.label !== 'string' ||
+    !isFiniteNonNegativeNumber(payload.sessionGeneration) ||
+    !isFiniteNonNegativeNumber(payload.snapshotRevision) ||
     !isFiniteNonNegativeNumber(payload.pageGeneration)
   ) return null
   const workflow = parseEolSnapshot(payload.workflow)
@@ -516,9 +495,22 @@ function parseRunnerSnapshot(payload: unknown): RunnerSnapshot | null {
     runnerId: payload.runnerId,
     slot: payload.slot,
     label: payload.label,
+    sessionGeneration: payload.sessionGeneration,
+    snapshotRevision: payload.snapshotRevision,
     pageGeneration: payload.pageGeneration,
     workflow,
   }
+}
+
+function parseRunnerRemovedEvent(payload: unknown): RunnerRemovedEvent | null {
+  return isRecord(payload) &&
+    isRunnerId(payload.runnerId) &&
+    isFiniteNonNegativeNumber(payload.sessionGeneration)
+    ? {
+        runnerId: payload.runnerId,
+        sessionGeneration: payload.sessionGeneration,
+      }
+    : null
 }
 
 function isRunnerId(value: unknown): value is RunnerId {
@@ -688,32 +680,15 @@ function isDiagnosticSeverity(value: unknown): value is EolRunnerSnapshot['diagn
   return value === 'info' || value === 'warning' || value === 'error'
 }
 
-function parseEolStartRequest(value: unknown): EolStartRequest {
-  if (!isRecord(value)) {
-    return { assetsText: '' }
+function parseEolStartRequest(value: unknown): unknown {
+  if (!isRecord(value)) return null
+  return {
+    assetsText: value.assetsText,
+    mode: value.mode,
+    repairOutcome: value.repairOutcome,
+    repairLocator: value.repairLocator,
+    moveToRepairLocator: value.moveToRepairLocator,
   }
-
-  const request: EolStartRequest = {
-    assetsText: typeof value.assetsText === 'string' ? value.assetsText : '',
-  }
-
-  if (isWorkflowMode(value.mode)) {
-    request.mode = value.mode
-  }
-
-  if (value.repairOutcome === 'confirmed' || value.repairOutcome === 'failed') {
-    request.repairOutcome = value.repairOutcome
-  }
-
-  if (typeof value.repairLocator === 'string') {
-    request.repairLocator = value.repairLocator
-  }
-
-  if (typeof value.moveToRepairLocator === 'string') {
-    request.moveToRepairLocator = value.moveToRepairLocator
-  }
-
-  return request
 }
 
 function isFiniteNonNegativeNumber(value: unknown): value is number {

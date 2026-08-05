@@ -35,6 +35,15 @@ export const WORKFLOW_TIMEOUTS = {
   repairAdvanceMs: 10_000,
 } as const
 
+export const WORKFLOW_RECOVERY_LIMITS = {
+  assetSubmissionEnterRetries: 2,
+  startRecoveryCycles: 2,
+  confirmWipeRetries: 1,
+  semanticTargetAttempts: 3,
+  semanticTargetBackoffMs: 150,
+  targetDiagnosticDedupMs: 2_000,
+} as const
+
 export const SELECTORS = {
   firstScanText: /^Scan the asset tag or serial number to get started$/i,
   startButtonText: /^Start$/i,

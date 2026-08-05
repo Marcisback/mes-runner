@@ -24,6 +24,7 @@ import type {
 } from '../src/types/managedChrome'
 import type { RunnerId } from '../src/types/eolRunner'
 import { isCurrentRunnerStream } from './runnerManagerCore'
+import { sanitizeSensitiveText } from './sanitize.ts'
 
 const MANAGED_CHROME_EXECUTABLE =
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -248,10 +249,6 @@ export class ManagedChromeController {
       await this.closeActiveContext()
       return this.setState('stopped')
     })
-  }
-
-  async setViewport(payload: unknown): Promise<void> {
-    parseViewport(payload)
   }
 
   connectFramePort(): void {
@@ -1096,21 +1093,6 @@ function parseScreencastFramePayload(
   }
 }
 
-function parseViewport(payload: unknown): ManagedChromeViewport | null {
-  if (!isRecord(payload)) {
-    return null
-  }
-
-  const width = sanitizeDimension(payload.width)
-  const height = sanitizeDimension(payload.height)
-
-  if (width === null || height === null) {
-    return null
-  }
-
-  return { width, height }
-}
-
 function parsePoint(
   payload: unknown,
   viewport: ManagedChromeViewport,
@@ -1167,16 +1149,6 @@ function parseKeyInput(payload: unknown): string | null {
   }
 
   return key
-}
-
-function sanitizeDimension(
-  value: unknown,
-): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    return null
-  }
-
-  return Math.round(value)
 }
 
 function sanitizeCoordinate(value: unknown, maximum: number): number | null {
@@ -1247,8 +1219,9 @@ function getLaunchErrorMessage(error: unknown): string {
 }
 
 function sanitizeDiagnostic(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error)
-  const withoutUrls = message.replace(/https?:\/\/\S+/g, '[url]')
+  const message = sanitizeSensitiveText(
+    error instanceof Error ? error.message : String(error),
+  )
   const replacements = [
     [getProfileDirectory(), '[managed-chrome-profile]'],
     [process.env.HOME, '[home]'],
@@ -1261,7 +1234,7 @@ function sanitizeDiagnostic(error: unknown): string {
     }
 
     return sanitizedMessage.split(value).join(replacement)
-  }, withoutUrls)
+  }, message)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -74,6 +74,27 @@ test('version 1 history migrates additively and remains readable', async (t) => 
   )
 })
 
+test('a future schema version fails closed with sanitized health', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'mes-runner-history-future-'))
+  const file = path.join(directory, 'history.sqlite')
+  const database = new sqlite3.Database(file)
+  await new Promise<void>((resolve, reject) => {
+    database.exec('PRAGMA user_version = 99', (error) =>
+      error === null ? resolve() : reject(error))
+  })
+  await new Promise<void>((resolve) => database.close(() => resolve()))
+  const store = new LocalHistoryStore(file)
+  await store.initialize()
+  t.after(async () => {
+    await store.close()
+    await rm(directory, { recursive: true, force: true })
+  })
+  assert.deepEqual(store.getHealth(), {
+    available: false,
+    message: 'Local history is unavailable.',
+  })
+})
+
 test('creates and finalizes a run', async (t) => {
   const { store, file } = await fixture(t)
   const id = await store.createRun('MRI', '2026-08-05T10:00:00.000Z')
@@ -90,7 +111,7 @@ test('attributes concurrent runs to their owning runner label', async (t) => {
     store.createRun('EOL', '2026-08-05T10:00:00.000Z', 'Runner 2'),
   ])
   assert.ok(first !== null && second !== null)
-  const rows = await queryAll(file, 'SELECT mode, runner_label FROM runs ORDER BY id')
+  const rows = await queryAll(file, 'SELECT mode, runner_label FROM runs ORDER BY runner_label')
   assert.deepEqual(rows, [
     { mode: 'MRI', runner_label: 'Runner 1' },
     { mode: 'EOL', runner_label: 'Runner 2' },

@@ -1,6 +1,7 @@
 import { useEngine } from '../../state/engineContext'
 import { useWorkspace } from '../../state/workspaceContext'
 import { formatTodayLabel } from '../../lib/dashboard'
+import { MAX_RUNNERS } from '../../types/eolRunner'
 import { PlusCircleIcon } from '../icons'
 import styles from './DashboardHeader.module.css'
 
@@ -12,7 +13,7 @@ export function DashboardHeader() {
   const { runners: snapshots, chromeState } = useEngine()
   const { createRunner, runners, creationPending, creationError } = useWorkspace()
 
-  const atCapacity = runners.length >= 3
+  const atCapacity = runners.length >= MAX_RUNNERS
 
   const attention =
     Object.values(snapshots).some((runner) => runner?.workflow.state === 'error') ||

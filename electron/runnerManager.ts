@@ -1,4 +1,5 @@
 import type { Page } from 'playwright-core'
+import { MAX_RUNNERS } from '../src/types/eolRunner.ts'
 import type {
   EolRunnerSnapshot,
   RunnerId,
@@ -15,8 +16,6 @@ import {
   lowestAvailableRunnerSlot,
   runnerIdForSlot,
 } from './runnerManagerCore.ts'
-
-export { MAX_RUNNERS } from './runnerManagerCore.ts'
 
 interface ManagedBrowserForRunners {
   getState(): ManagedChromeState
@@ -35,6 +34,8 @@ interface RunnerSession {
   runnerId: RunnerId
   slot: RunnerSlot
   label: string
+  sessionGeneration: number
+  snapshotRevision: number
   workflow: RunnerWorkflow
 }
 
@@ -61,6 +62,7 @@ interface RunnerEventHost {
 export class RunnerManager {
   private readonly sessions = new Map<RunnerId, RunnerSession>()
   private disposed = false
+  private nextSessionGeneration = 1
   private readonly hostWindow: RunnerEventHost
   private readonly browser: ManagedBrowserForRunners
   private readonly workflowFactory: RunnerWorkflowFactory
@@ -96,7 +98,7 @@ export class RunnerManager {
         ok: false,
         error: {
           code: 'capacity-reached',
-          message: 'MES Runner supports a maximum of three simultaneous runners.',
+          message: `MES Runner supports a maximum of ${MAX_RUNNERS} simultaneous runners.`,
         },
       }
     }
@@ -104,17 +106,25 @@ export class RunnerManager {
     try {
       await this.browser.createRunnerPage(runnerId)
       const label = `Runner ${slot}`
+      const sessionGeneration = this.nextSessionGeneration
       const access = this.createBrowserAccess(runnerId)
       const workflow = this.workflowFactory(
         access,
         label,
-        () => this.emitUpdated(runnerId),
+        () => this.emitUpdated(runnerId, sessionGeneration),
       )
-      const session: RunnerSession = { runnerId, slot, label, workflow }
+      this.nextSessionGeneration += 1
+      const session: RunnerSession = {
+        runnerId,
+        slot,
+        label,
+        sessionGeneration,
+        snapshotRevision: 0,
+        workflow,
+      }
       this.sessions.set(runnerId, session)
-      const snapshot = this.snapshot(session)
-      this.emitUpdated(runnerId)
-      return { ok: true, value: snapshot }
+      this.emitUpdated(runnerId, sessionGeneration)
+      return { ok: true, value: this.snapshot(session) }
     } catch {
       await this.browser.closeRunnerPage(runnerId).catch(() => undefined)
       return creationFailed('The runner page could not be created.')
@@ -128,7 +138,7 @@ export class RunnerManager {
     await session.workflow.dispose()
     await this.browser.closeRunnerPage(runnerId)
     this.sessions.delete(runnerId)
-    this.emitRemoved(runnerId)
+    this.emitRemoved(runnerId, session.sessionGeneration)
     return { ok: true, value: runnerId }
   }
 
@@ -198,24 +208,30 @@ export class RunnerManager {
       runnerId: session.runnerId,
       slot: session.slot,
       label: session.label,
+      sessionGeneration: session.sessionGeneration,
+      snapshotRevision: session.snapshotRevision,
       pageGeneration: this.browser.getRunnerPageGeneration(session.runnerId),
       workflow: session.workflow.getSnapshot(),
     }
   }
 
-  private emitUpdated(runnerId: RunnerId): void {
+  private emitUpdated(runnerId: RunnerId, sessionGeneration: number): void {
     if (this.hostWindow.isDestroyed()) return
     const session = this.sessions.get(runnerId)
-    if (session === undefined) return
+    if (session === undefined || session.sessionGeneration !== sessionGeneration) return
+    session.snapshotRevision += 1
     this.hostWindow.webContents.send(
       EOL_RUNNER_IPC_CHANNELS.snapshotChanged,
       this.snapshot(session),
     )
   }
 
-  private emitRemoved(runnerId: RunnerId): void {
+  private emitRemoved(runnerId: RunnerId, sessionGeneration: number): void {
     if (this.hostWindow.isDestroyed()) return
-    this.hostWindow.webContents.send(EOL_RUNNER_IPC_CHANNELS.removed, runnerId)
+    this.hostWindow.webContents.send(EOL_RUNNER_IPC_CHANNELS.removed, {
+      runnerId,
+      sessionGeneration,
+    })
   }
 }
 

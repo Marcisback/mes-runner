@@ -27,16 +27,12 @@ import type {
   EolAssetErrorDetails,
   EolRunnerSnapshot,
   EolRunnerState,
-  RepairOutcome,
   RunnerDiagnosticEvent,
   RunnerDiagnosticSeverity,
-  WorkflowMode,
 } from '../src/types/eolRunner'
-import {
-  DEFAULT_MOVE_TO_REPAIR_LOCATOR,
-  DEFAULT_REPAIR_LOCATOR,
-  WORKFLOW_LABELS,
-} from '../src/types/eolRunner'
+import { parseRunnerStartRequest } from './runnerRequestValidation.ts'
+import { sanitizeSensitiveText } from './sanitize.ts'
+import { WORKFLOW_LABELS } from '../src/types/eolRunner'
 
 export class EolRunner {
   private readonly managedChrome: RunnerBrowserAccess
@@ -91,12 +87,9 @@ export class EolRunner {
       return this.setError('A workflow runner is already active.')
     }
 
-    const request = parseStartRequest(payload)
-    const assets = parseAssets(request.assetsText)
-
-    if (assets.length === 0) {
-      return this.setError('Enter at least one asset ID before starting.')
-    }
+    const request = parseRunnerStartRequest(payload)
+    if (request === null) return this.setError('The run configuration was invalid.')
+    const { assets } = request
 
     const page = this.getReadyPage()
 
@@ -496,7 +489,9 @@ export class EolRunner {
       assetId,
       mode: this.snapshot.mode,
       outcome,
-      reason,
+      reason: reason === null
+        ? null
+        : sanitizeDiagnosticMessage(reason).slice(0, 2_000),
       startedAt,
       finishedAt: new Date().toISOString(),
     })
@@ -637,86 +632,6 @@ export class EolRunner {
   }
 }
 
-function parseStartRequest(payload: unknown): {
-  assetsText: string
-  options: WorkflowOptions
-} {
-  if (typeof payload === 'string') {
-    return {
-      assetsText: payload,
-      options: createWorkflowOptions({ mode: 'EOL' }),
-    }
-  }
-
-  if (!isRecord(payload)) {
-    return {
-      assetsText: '',
-      options: createWorkflowOptions({ mode: 'EOL' }),
-    }
-  }
-
-  return {
-    assetsText: typeof payload.assetsText === 'string' ? payload.assetsText : '',
-    options: createWorkflowOptions(payload),
-  }
-}
-
-export function parseAssets(text: string): string[] {
-  const seen = new Set<string>()
-  const assets: string[] = []
-
-  for (const line of text.split(/\r?\n/)) {
-    const asset = line.trim()
-
-    if (asset.length === 0 || asset.startsWith('#') || seen.has(asset)) {
-      continue
-    }
-
-    seen.add(asset)
-    assets.push(asset)
-  }
-
-  return assets
-}
-
-function createWorkflowOptions(payload: Record<string, unknown>): WorkflowOptions {
-  const mode = parseWorkflowMode(payload.mode)
-  const repairOutcome = parseRepairOutcome(payload.repairOutcome)
-  const repairLocator = parseNonEmptyString(
-    payload.repairLocator,
-    DEFAULT_REPAIR_LOCATOR,
-  )
-  const moveToRepairLocator = parseNonEmptyString(
-    payload.moveToRepairLocator,
-    DEFAULT_MOVE_TO_REPAIR_LOCATOR,
-  )
-
-  return {
-    mode,
-    repairOutcome,
-    repairLocator,
-    moveToRepairLocator,
-  }
-}
-
-function parseWorkflowMode(value: unknown): WorkflowMode {
-  return value === 'MRI' ||
-    value === 'MRI_FAIL' ||
-    value === 'REPAIR'
-    ? value
-    : 'EOL'
-}
-
-function parseRepairOutcome(value: unknown): RepairOutcome {
-  return value === 'failed' ? 'failed' : 'confirmed'
-}
-
-function parseNonEmptyString(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim().length > 0
-    ? value.trim()
-    : fallback
-}
-
 function createEmptySnapshot(): EolRunnerSnapshot {
   return {
     state: 'idle',
@@ -734,16 +649,7 @@ function createEmptySnapshot(): EolRunnerSnapshot {
 }
 
 function sanitizeDiagnosticMessage(message: string): string {
-  return message
-    .replace(/https?:\/\/[^\s]+/g, (url) => {
-      try {
-        const parsed = new URL(url)
-        return `${parsed.origin}${parsed.pathname}`
-      } catch {
-        return '[url]'
-      }
-    })
-    .replace(/\/Users\/[^\s]+/g, '[local-path]')
+  return sanitizeSensitiveText(message)
 }
 
 function isActiveRunnerState(state: EolRunnerState): boolean {
@@ -760,23 +666,20 @@ function getSafeErrorMessage(error: unknown): string {
   }
 
   if (error instanceof NeedsReviewError) {
-    return error.reason
+    return sanitizeDiagnosticMessage(error.reason).slice(0, 2_000)
   }
 
   if (error instanceof WorkflowInvariantError) {
-    return error.reason
+    return sanitizeDiagnosticMessage(error.reason).slice(0, 2_000)
   }
 
   if (error instanceof Error && error.message.length > 0) {
-    return error.message.replace(/https?:\/\/\S+/g, '[url]')
+    return sanitizeDiagnosticMessage(error.message).slice(0, 2_000)
   }
 
   return 'Workflow runner failed unexpectedly.'
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
 
 async function delay(ms: number): Promise<void> {
   await new Promise<void>((resolve) => {

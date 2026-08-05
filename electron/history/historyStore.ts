@@ -216,10 +216,14 @@ export class LocalHistoryStore {
   private async migrate(): Promise<void> {
     const database = this.requireDatabase()
     const version = await get<{ user_version: number }>(database, 'PRAGMA user_version')
-    if ((version?.user_version ?? 0) >= SCHEMA_VERSION) return
+    const currentVersion = version?.user_version ?? 0
+    if (currentVersion > SCHEMA_VERSION) {
+      throw new Error('History database schema is newer than this application.')
+    }
+    if (currentVersion === SCHEMA_VERSION) return
     await exec(database, 'BEGIN IMMEDIATE')
     try {
-      if ((version?.user_version ?? 0) < 1) {
+      if (currentVersion < 1) {
         await exec(database, `
           CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -244,10 +248,10 @@ export class LocalHistoryStore {
           CREATE INDEX IF NOT EXISTS idx_asset_results_outcome ON asset_results(outcome);
         `)
       }
-      if ((version?.user_version ?? 0) < 2) {
+      if (currentVersion < 2) {
         await exec(database, 'ALTER TABLE runs ADD COLUMN runner_label TEXT')
       }
-      await exec(database, `PRAGMA user_version = ${SCHEMA_VERSION}`)
+      await exec(database, 'PRAGMA user_version = 2')
       await exec(database, 'COMMIT')
     } catch (error: unknown) {
       await exec(database, 'ROLLBACK').catch(() => undefined)

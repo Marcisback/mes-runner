@@ -2,12 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Page } from 'playwright-core'
 import { RunnerManager, type RunnerWorkflow } from '../runnerManager.ts'
+import type { RunnerBrowserAccess } from '../runnerBrowserAccess.ts'
 import type { EolRunnerSnapshot, RunnerId } from '../../src/types/eolRunner.ts'
 
 class FakeBrowser {
   readonly pages = new Map<RunnerId, Page>()
   readonly closed: RunnerId[] = []
   readonly streams: Array<RunnerId | null> = []
+  readonly invalidationListeners = new Set<(reason: string, runnerId: RunnerId | null) => void>()
   failNext = false
 
   getState() {
@@ -25,7 +27,13 @@ class FakeBrowser {
     return this.pages.has(runnerId) ? { browserGeneration: 1, pageGeneration: Number(runnerId.at(-1)) } : null
   }
   getRunnerPageGeneration(runnerId: RunnerId) { return this.pages.has(runnerId) ? Number(runnerId.at(-1)) : 0 }
-  onAutomationSessionInvalidated() { return () => undefined }
+  onAutomationSessionInvalidated(listener: (reason: string, runnerId: RunnerId | null) => void) {
+    this.invalidationListeners.add(listener)
+    return () => this.invalidationListeners.delete(listener)
+  }
+  invalidate(runnerId: RunnerId | null) {
+    for (const listener of this.invalidationListeners) listener('session invalidated', runnerId)
+  }
   async selectRunnerStream(runnerId: RunnerId | null) { this.streams.push(runnerId); return runnerId === null || this.pages.has(runnerId) }
 }
 
@@ -43,13 +51,21 @@ class FakeWorkflow implements RunnerWorkflow {
 function fixture() {
   const browser = new FakeBrowser()
   const workflows: FakeWorkflow[] = []
+  const accesses: RunnerBrowserAccess[] = []
+  const snapshotCallbacks: Array<(snapshot: EolRunnerSnapshot) => void> = []
   const events: Array<{ channel: string; value: unknown }> = []
   const manager = new RunnerManager(
     { isDestroyed: () => false, webContents: { send: (channel, value) => events.push({ channel, value }) } },
     browser,
-    () => { const workflow = new FakeWorkflow(); workflows.push(workflow); return workflow },
+    (access, _label, onSnapshot) => {
+      accesses.push(access)
+      snapshotCallbacks.push(onSnapshot)
+      const workflow = new FakeWorkflow()
+      workflows.push(workflow)
+      return workflow
+    },
   )
-  return { manager, browser, workflows, events }
+  return { manager, browser, workflows, accesses, snapshotCallbacks, events }
 }
 
 test('production manager creates distinct pages in slots 1-3 and rejects a fourth', async () => {
@@ -65,7 +81,7 @@ test('production manager creates distinct pages in slots 1-3 and rejects a fourt
 })
 
 test('failed creation consumes no number and closing Runner 2 reuses slot 2', async () => {
-  const { manager, browser } = fixture()
+  const { manager, browser, events } = fixture()
   browser.failNext = true
   assert.equal((await manager.create()).ok, false)
   assert.equal((await manager.create()).ok, true)
@@ -73,6 +89,13 @@ test('failed creation consumes no number and closing Runner 2 reuses slot 2', as
   await manager.close('runner-2')
   const replacement = await manager.create()
   assert.equal(replacement.ok && replacement.value.runnerId, 'runner-2')
+  if (!replacement.ok) return
+  const removed = events.find((event) => event.channel.endsWith(':removed'))
+  assert.deepEqual(removed?.value, {
+    runnerId: 'runner-2',
+    sessionGeneration: replacement.value.sessionGeneration - 1,
+  })
+  assert.notEqual(replacement.value.sessionGeneration, 2)
 })
 
 test('commands, workflow state, diagnostics, and cleanup remain runner scoped', async () => {
@@ -99,6 +122,37 @@ test('only selected runner streams and global disposal closes every session', as
   await manager.dispose()
   assert.deepEqual(browser.closed.sort(), ['runner-1', 'runner-2', 'runner-3'])
   assert.equal(manager.list().length, 0)
+})
+
+test('stale workflow callbacks cannot publish over a reused runner slot', async () => {
+  const { manager, snapshotCallbacks, events } = fixture()
+  await manager.create()
+  const staleCallback = snapshotCallbacks[0]
+  await manager.close('runner-1')
+  const replacement = await manager.create()
+  assert.equal(replacement.ok, true)
+  events.length = 0
+  staleCallback?.(emptySnapshot())
+  assert.equal(events.length, 0)
+  snapshotCallbacks[1]?.(emptySnapshot())
+  assert.equal(events.length, 1)
+  assert.equal(
+    (events[0]?.value as { sessionGeneration?: number }).sessionGeneration,
+    replacement.ok ? replacement.value.sessionGeneration : -1,
+  )
+})
+
+test('shared invalidation reaches every runner while page invalidation stays scoped', async () => {
+  const { manager, browser, accesses } = fixture()
+  await manager.create()
+  await manager.create()
+  const counts = [0, 0]
+  accesses[0]?.onAutomationSessionInvalidated(() => { counts[0] += 1 })
+  accesses[1]?.onAutomationSessionInvalidated(() => { counts[1] += 1 })
+  browser.invalidate('runner-2')
+  assert.deepEqual(counts, [0, 1])
+  browser.invalidate(null)
+  assert.deepEqual(counts, [1, 2])
 })
 
 function emptySnapshot(): EolRunnerSnapshot {

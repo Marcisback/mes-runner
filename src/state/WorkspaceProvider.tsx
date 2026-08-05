@@ -2,10 +2,16 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import {
   DEFAULT_MOVE_TO_REPAIR_LOCATOR,
   DEFAULT_REPAIR_LOCATOR,
+  MAX_RUNNERS,
   type RunnerId,
 } from '../types/eolRunner'
-import { isPrimaryWorkspace, type RunnerConfig, type RunnerTab, type WorkspaceId } from '../types/workspace'
-import type { LogResultFilter } from '../lib/logs'
+import {
+  isPrimaryWorkspace,
+  type LogsFilterIntent,
+  type RunnerConfig,
+  type RunnerTab,
+  type WorkspaceId,
+} from '../types/workspace'
 import { runnerTabsFromSnapshots } from '../lib/runnerViews'
 import { useEngine } from './engineContext'
 import { WorkspaceContext, type WorkspaceContextValue } from './workspaceContext'
@@ -25,7 +31,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [runnerConfigs, setRunnerConfigs] = useState<Record<string, RunnerConfig>>({})
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<WorkspaceId>('dashboard')
   const [lastActiveRunnerId, setLastActiveRunnerId] = useState<RunnerId | null>(null)
-  const [logsFilterIntent, setLogsFilterIntent] = useState<LogResultFilter>('all')
+  const [logsFilterIntent, setLogsFilterIntent] = useState<LogsFilterIntent>('all')
   const [creationPending, setCreationPending] = useState(false)
   const [creationError, setCreationError] = useState<string | null>(null)
 
@@ -56,13 +62,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const openLogs = useCallback((filter: LogResultFilter = 'all'): void => {
+  const openLogs = useCallback((filter: LogsFilterIntent = 'all'): void => {
     setLogsFilterIntent(filter)
     setActiveWorkspaceId('logs')
   }, [])
 
   const createRunner = useCallback(async (): Promise<RunnerId | null> => {
-    if (creationPending || runners.length >= 3) return null
+    if (creationPending || runners.length >= MAX_RUNNERS) return null
     setCreationPending(true)
     setCreationError(null)
     try {

@@ -45,6 +45,7 @@ Use a zero-padded, incrementing number so ordering is stable.
 - [RFC 0002: Managed Chrome Integration](./0002-managed-chrome-integration.md) — Accepted
 - [RFC 0003: Local History Persistence](./0003-local-history-persistence.md) — Accepted
 - [RFC 0004: Multi-Runner Browser Architecture](./0004-multi-runner-browser-architecture.md) — Accepted
+- [RFC 0005: Electron Trust-Boundary Hardening](./0005-electron-trust-boundary-hardening.md) — Accepted
 
 ## Related
 

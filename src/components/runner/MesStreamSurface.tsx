@@ -30,7 +30,7 @@ import type { RunnerId } from '../../types/eolRunner'
 /**
  * The live MES browser stream. Owns the drawing canvas, the single frame
  * subscription (`window.managedChrome.onFrame`), and pointer/keyboard forwarding
- * to managed Chrome. Managed Chrome lifecycle state is read from the shared
+ * to the runner selected by the workspace coordinator. Managed Chrome lifecycle state is read from the shared
  * {@link EngineProvider} rather than a private subscription, so the surface can
  * be mounted once and reused across every runner tab without duplicating
  * subscriptions or restarting the stream.
@@ -211,10 +211,6 @@ export function MesStreamSurface({
     },
     [clearCanvas, processNextFrame],
   )
-
-  useEffect(() => {
-    void window.managedChrome.selectRunnerStream(runnerId)
-  }, [runnerId])
 
   useEffect(() => {
     const surface = surfaceRef.current

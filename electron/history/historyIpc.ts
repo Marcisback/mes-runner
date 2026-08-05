@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain } from 'electron'
 import type { HistoryResponse } from '../../src/types/history'
 import { HISTORY_IPC_CHANNELS } from './historyChannels'
 import { LocalHistoryStore } from './historyStore'
+import { isTrustedIpcSender, type RendererSecurityPolicy } from '../ipcSecurity.ts'
 import {
   parseHistoryDateRequest,
   parseHistoryRangeRequest,
@@ -9,19 +10,26 @@ import {
 
 let registered = false
 
-export function registerHistoryIpc(store: LocalHistoryStore): void {
+export function registerHistoryIpc(
+  store: LocalHistoryStore,
+  policy: RendererSecurityPolicy,
+): void {
   if (registered) return
   registered = true
 
-  ipcMain.handle(HISTORY_IPC_CHANNELS.weeklySummary, () => store.getWeeklySummary())
-  ipcMain.handle(HISTORY_IPC_CHANNELS.dates, () => store.getHistoryDates())
-  ipcMain.handle(HISTORY_IPC_CHANNELS.forDate, (_event, payload: unknown) => {
+  ipcMain.handle(HISTORY_IPC_CHANNELS.weeklySummary, (event) =>
+    isTrustedIpcSender(event, policy) ? store.getWeeklySummary() : invalidRequest(store))
+  ipcMain.handle(HISTORY_IPC_CHANNELS.dates, (event) =>
+    isTrustedIpcSender(event, policy) ? store.getHistoryDates() : invalidRequest(store))
+  ipcMain.handle(HISTORY_IPC_CHANNELS.forDate, (event, payload: unknown) => {
+    if (!isTrustedIpcSender(event, policy)) return invalidRequest(store)
     const request = parseHistoryDateRequest(payload)
     return request === null
       ? invalidRequest(store)
       : store.getHistoryRange(request)
   })
-  ipcMain.handle(HISTORY_IPC_CHANNELS.range, (_event, payload: unknown) => {
+  ipcMain.handle(HISTORY_IPC_CHANNELS.range, (event, payload: unknown) => {
+    if (!isTrustedIpcSender(event, policy)) return invalidRequest(store)
     const request = parseHistoryRangeRequest(payload)
     return request === null
       ? invalidRequest(store)
@@ -43,4 +51,3 @@ function invalidRequest<T>(store: LocalHistoryStore): HistoryResponse<T> {
     error: 'The history request was invalid.',
   }
 }
-

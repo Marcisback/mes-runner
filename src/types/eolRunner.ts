@@ -6,6 +6,7 @@ export type WorkflowMode =
 
 export type RunnerId = 'runner-1' | 'runner-2' | 'runner-3'
 export type RunnerSlot = 1 | 2 | 3
+export const MAX_RUNNERS = 3
 
 export type RepairOutcome = 'confirmed' | 'failed'
 
@@ -84,8 +85,15 @@ export interface RunnerSnapshot {
   runnerId: RunnerId
   slot: RunnerSlot
   label: string
+  sessionGeneration: number
+  snapshotRevision: number
   pageGeneration: number
   workflow: EolRunnerSnapshot
+}
+
+export interface RunnerRemovedEvent {
+  runnerId: RunnerId
+  sessionGeneration: number
 }
 
 export type RunnerCapacityError = {
@@ -109,7 +117,7 @@ export interface EolRunnerApi {
   onEolSnapshotChanged(
     listener: (snapshot: RunnerSnapshot) => void,
   ): () => void
-  onRunnerRemoved(listener: (runnerId: RunnerId) => void): () => void
+  onRunnerRemoved(listener: (event: RunnerRemovedEvent) => void): () => void
 }
 
 export const WORKFLOW_LABELS: Record<WorkflowMode, string> = {

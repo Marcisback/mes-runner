@@ -93,11 +93,11 @@ export function isBrowserDisconnectedDiagnostic(error: unknown): boolean {
 
 export function sanitizeWorkflowReason(error: unknown): string {
   if (error instanceof AssetSkipError || error instanceof NeedsReviewError) {
-    return error.reason
+    return sanitizeSensitiveText(error.reason)
   }
 
   if (error instanceof WorkflowInvariantError) {
-    return error.reason
+    return sanitizeSensitiveText(error.reason)
   }
 
   if (error instanceof AuthenticationRequiredError) {
@@ -117,8 +117,9 @@ export function sanitizeWorkflowReason(error: unknown): string {
   }
 
   if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message.replace(/https?:\/\/\S+/g, '[url]')
+    return sanitizeSensitiveText(error.message)
   }
 
   return 'unexpected-error'
 }
+import { sanitizeSensitiveText } from '../sanitize.ts'

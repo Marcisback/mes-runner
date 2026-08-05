@@ -9,7 +9,6 @@ import { completeMoveToRepair, validateMoveToRepairLocator } from './moveToRepai
 import { closePopupIfPresent } from './popupHandler'
 import {
   clickWithSettles,
-  countVisible,
   isLocatorEditable,
   isLocatorEnabled,
   isLocatorVisible,
@@ -31,9 +30,6 @@ import {
   inspectInitialScanner,
 } from './stateDetectors'
 import {
-  WORKFLOW_RECOVERY_LIMITS,
-} from './transitionRecoveryCore'
-import {
   decideQueueHandoff,
   isQueueHandoffAcknowledgementStage,
 } from './queueHandoffCore'
@@ -54,6 +50,7 @@ import {
 import { BoundedObservationGate } from './passiveObservationCore'
 import {
   WORKFLOW_TIMEOUTS,
+  WORKFLOW_RECOVERY_LIMITS,
   type AssetWorkflowContext,
   type CompletionSignal,
   type WorkflowRuntime,
@@ -920,14 +917,6 @@ async function verifySafeInitialState(
 
     throw new NeedsReviewError('Completion could not be verified.')
   }
-}
-
-export async function getVisibleActionCount(context: WorkflowRuntime): Promise<number> {
-  return countVisible(context.page.locator('button, [role="button"]'))
-}
-
-export async function isActionable(locator: import('playwright-core').Locator): Promise<boolean> {
-  return (await isLocatorVisible(locator)) && (await isLocatorEnabled(locator))
 }
 
 async function runWorkflowStep<T>(

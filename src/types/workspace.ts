@@ -41,6 +41,8 @@ export type RunnerStatus =
   | 'needs-review'
   | 'error'
 
+export type LogsFilterIntent = 'all' | 'completed' | 'skipped' | 'needs-review'
+
 export function isPrimaryWorkspace(id: WorkspaceId): id is PrimaryWorkspaceId {
   return (PRIMARY_WORKSPACES as readonly string[]).includes(id)
 }

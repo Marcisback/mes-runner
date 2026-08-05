@@ -1,18 +1,22 @@
 import { createContext, useContext } from 'react'
 import type { RunnerId } from '../types/eolRunner'
-import type { LogResultFilter } from '../lib/logs'
-import type { RunnerConfig, RunnerTab, WorkspaceId } from '../types/workspace'
+import type {
+  LogsFilterIntent,
+  RunnerConfig,
+  RunnerTab,
+  WorkspaceId,
+} from '../types/workspace'
 
 export interface WorkspaceContextValue {
   runners: RunnerTab[]
   runnerConfigs: Record<string, RunnerConfig>
   activeWorkspaceId: WorkspaceId
   lastActiveRunnerId: RunnerId | null
-  logsFilterIntent: LogResultFilter
+  logsFilterIntent: LogsFilterIntent
   creationPending: boolean
   creationError: string | null
   setActiveWorkspace(id: WorkspaceId): void
-  openLogs(filter?: LogResultFilter): void
+  openLogs(filter?: LogsFilterIntent): void
   createRunner(): Promise<RunnerId | null>
   closeRunner(id: RunnerId): Promise<boolean>
   updateRunnerConfig(id: RunnerId, patch: Partial<RunnerConfig>): void

@@ -114,23 +114,6 @@ export async function clickWithSettles(
   await sleepWithCheckpoint(runtime, postMs)
 }
 
-export async function waitVisibleAndEnabled(
-  runtime: WorkflowRuntime,
-  locator: Locator,
-  description: string,
-  timeoutMs: number = WORKFLOW_TIMEOUTS.defaultMs,
-): Promise<Locator> {
-  return popupAwareWait(
-    runtime,
-    description,
-    async () =>
-      (await isVisibleAndEnabled(locator))
-        ? locator
-        : null,
-    timeoutMs,
-  )
-}
-
 export async function waitScopedVisibleAndEnabled(
   runtime: WorkflowRuntime,
   locator: Locator,
@@ -162,33 +145,6 @@ export async function isLocatorEditable(locator: Locator): Promise<boolean> {
 
 export async function isVisibleAndEnabled(locator: Locator): Promise<boolean> {
   return (await isLocatorVisible(locator)) && (await isLocatorEnabled(locator))
-}
-
-export async function countVisible(locator: Locator, maxCount = 20): Promise<number> {
-  const count = await locator.count().catch(() => 0)
-  let visible = 0
-
-  for (let index = 0; index < Math.min(count, maxCount); index += 1) {
-    if (await isLocatorVisible(locator.nth(index))) {
-      visible += 1
-    }
-  }
-
-  return visible
-}
-
-export async function firstVisible(locator: Locator): Promise<Locator | null> {
-  const count = await locator.count().catch(() => 0)
-
-  for (let index = 0; index < count; index += 1) {
-    const candidate = locator.nth(index)
-
-    if (await isLocatorVisible(candidate)) {
-      return candidate
-    }
-  }
-
-  return null
 }
 
 export async function visibleMatches(locator: Locator): Promise<Locator[]> {
@@ -234,22 +190,6 @@ export async function singleVisibleOrNull(
   }
 
   return matches[0] ?? null
-}
-
-export async function firstVisibleEnabled(
-  locator: Locator,
-): Promise<Locator | null> {
-  const count = await locator.count().catch(() => 0)
-
-  for (let index = 0; index < count; index += 1) {
-    const candidate = locator.nth(index)
-
-    if (await isVisibleAndEnabled(candidate)) {
-      return candidate
-    }
-  }
-
-  return null
 }
 
 export async function visibleEnabledMatches(locator: Locator): Promise<Locator[]> {

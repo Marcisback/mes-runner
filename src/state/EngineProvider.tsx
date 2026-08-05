@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { RunnerId, RunnerSnapshot } from '../types/eolRunner'
 import type { ManagedChromeState } from '../types/managedChrome'
 import { EngineContext, type EngineContextValue } from './engineContext'
+import { applyRunnerRemoval, applyRunnerSnapshot } from '../lib/runnerViews.ts'
 
 const INITIAL_CHROME_STATE: ManagedChromeState = {
   lifecycle: 'stopped',
@@ -18,17 +19,13 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     let mounted = true
     void window.eolRunner.listRunners().then((snapshots) => {
       if (!mounted) return
-      setRunners(Object.fromEntries(snapshots.map((snapshot) => [snapshot.runnerId, snapshot])))
+      setRunners((current) => snapshots.reduce(applyRunnerSnapshot, current))
     })
     const unsubscribeUpdated = window.eolRunner.onEolSnapshotChanged((snapshot) => {
-      setRunners((current) => ({ ...current, [snapshot.runnerId]: snapshot }))
+      setRunners((current) => applyRunnerSnapshot(current, snapshot))
     })
-    const unsubscribeRemoved = window.eolRunner.onRunnerRemoved((runnerId) => {
-      setRunners((current) => {
-        const next = { ...current }
-        delete next[runnerId]
-        return next
-      })
+    const unsubscribeRemoved = window.eolRunner.onRunnerRemoved((event) => {
+      setRunners((current) => applyRunnerRemoval(current, event))
     })
     return () => {
       mounted = false

@@ -54,6 +54,8 @@ NNNN-short-title.md      e.g. 0001-use-playwright-for-automation.md
   - Accepted
 - [ADR 0005: Multi-Runner Browser Architecture](./0005-multi-runner-browser-architecture.md)
   - Accepted; approved live multi-page MES validation pending
+- [ADR 0006: Electron Trust-Boundary Hardening](./0006-electron-trust-boundary-hardening.md)
+  - Accepted
 
 ## Related
 

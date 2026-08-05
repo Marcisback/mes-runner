@@ -22,8 +22,10 @@ import {
   TargetInstabilityDeduplicator,
   type SemanticActivationAction,
 } from './semanticActionCore.ts'
-import { WORKFLOW_RECOVERY_LIMITS } from './transitionRecoveryCore.ts'
-import type { AssetWorkflowContext } from './types.ts'
+import {
+  WORKFLOW_RECOVERY_LIMITS,
+  type AssetWorkflowContext,
+} from './types.ts'
 import type { StageLoopMode } from './deterministicStageCore.ts'
 
 export interface SemanticActionDependencies {

@@ -44,8 +44,10 @@ the precise boundary between implemented, validated, and planned behavior.
 
 - **Electron main process** (`electron/main.ts`) — creates the hardened host
   `BrowserWindow`, owns managed-Chrome and workflow-runner orchestration, and
-  registers narrow typed IPC. The host explicitly enables `contextIsolation`
-  and disables `nodeIntegration`.
+  registers narrow typed IPC. The host explicitly enables `contextIsolation`,
+  renderer sandboxing, and web security; disables `nodeIntegration` and
+  packaged DevTools; denies new windows; and restricts navigation to the
+  configured renderer entry.
 - **Managed Chrome controller** (`electron/managedChromeController.ts`) —
   main-process-owned Playwright persistent context that launches the installed
   organization-managed Google Chrome application with `channel: "chrome"` and
@@ -64,22 +66,20 @@ the precise boundary between implemented, validated, and planned behavior.
   APIs exposed as `window.managedChrome` and `window.eolRunner`. The renderer
   sends lifecycle and runner-scoped input/workflow intents and receives sanitized
   runner snapshots and generation-tagged screencast frames. Runner IDs are
-  validated in the main process. Raw IPC, Playwright, CDP sessions, Chrome
+  validated in the main process, and every privileged event must originate
+  from the trusted renderer main frame and URL. Raw IPC, Playwright, CDP sessions, Chrome
   handles, cookies, credentials, profile paths, and arbitrary browser control
   are not exposed to React.
-- **Runtime MES state observer**
-  (`electron/workflows/mesRuntimeState.ts`) — a central non-mutating observer
-  composed from stage-scoped detectors. It identifies landing, retained asset,
-  Start, Wipe, Diagnostic, failure-dialog, Move-to-Repair, completion evidence,
-  known business-error, unknown, and ambiguous states. It returns sanitized
-  counts and booleans, not DOM content or Playwright objects. Multiple
-  conflicting actionable states fail closed as ambiguous.
-- **Pure reconciliation policy**
-  (`electron/workflows/runtimeReconciliation.ts`) — accepts workflow mode,
-  observed MES state, expected stage, last confirmed stage, pending action,
-  retry counters, and lifecycle interruption state as separate typed inputs. It
-  returns an explicit act, wait, skip-forward, complete, retry, needs-review,
-  authentication, disconnection, pause, or stop decision without touching MES.
+- **Runtime MES stage observer** (`electron/workflows/passiveStageSnapshot.ts`,
+  `electron/workflows/deterministicStages.ts`) — a fast central non-mutating
+  snapshot composed from stage-scoped control bundles. It identifies landing,
+  Start, Wipe scan/confirm, Diagnostic scan/action, failure-dialog,
+  Move-to-Repair, completion, business-error, unknown, and ambiguous stages. It
+  returns sanitized counts and booleans, not DOM content or Playwright objects.
+  Multiple conflicting actionable bundles fail closed as ambiguous.
+- **Pure stage policy** (`electron/workflows/deterministicStageCore.ts`) —
+  resolves snapshots and mode-specific pending actions into explicit act, wait,
+  complete, or needs-review decisions without touching MES.
 - **Workflow runtime** (`electron/workflows/workflows.ts`) — EOL, MRI Pass, and
   MRI Fail share an observation/decision/action loop. Every action is selected
   from a fresh observation, re-resolves its scoped target before interaction,
@@ -95,7 +95,8 @@ the precise boundary between implemented, validated, and planned behavior.
   complete until Move-to-Repair completion is confirmed.
 - **Runner manager and diagnostics** (`electron/runnerManager.ts`,
   `electron/eolRunner.ts`) — a typed main-process map owns at most three runner
-  sessions. Each has a distinct page, page generation, workflow engine, queue,
+  sessions. Each has a distinct page, session generation, snapshot revision,
+  page generation, workflow engine, queue,
   lifecycle flags, bounded diagnostics, terminal receipt, and history run ID.
   Slots are labelled Runner 1-3 and the lowest free slot is reused. Pause,
   Resume, Stop Safely, failure, and cleanup are runner-scoped. Runtime progress
@@ -126,7 +127,8 @@ the precise boundary between implemented, validated, and planned behavior.
 - **Styling** — plain CSS + CSS Modules, driven by theme tokens in
   `src/styles/theme.css`; global reset in `src/styles/global.css`.
 - **Security posture** — explicit host-window `contextIsolation` on and
-  `nodeIntegration` off; no `<webview>` tag; no raw IPC in the renderer. MES
+  renderer sandbox/web security on; `nodeIntegration` off; restrictive CSP;
+  trusted-main-frame IPC validation; no `<webview>` tag; no raw IPC in the renderer. MES
   Runner uses scoped Playwright roles, labels, placeholders, and controls for
   workflow automation but does not spoof browser identity, bypass managed
   controls, automate credentials or YubiKey authentication, expose CDP or
@@ -160,7 +162,6 @@ implemented:
   MES testing with approved assets.
 - Production approval of three-page concurrency and shared authentication
   recovery after controlled live MES testing.
-- Content Security Policy.
 - Routing / multiple mounted views.
 - Auto-update via GitHub Releases.
 - GitHub Actions CI/CD.
@@ -246,7 +247,7 @@ mes-runner/
 │   ├── managedChromeChannels.ts
 │   │                         # Managed Chrome IPC channel constants
 │   ├── managedChromeIpc.ts  # Typed managed Chrome IPC registration
-│   ├── eolRunner.ts         # Sequential runner and bounded diagnostics
+│   ├── eolRunner.ts         # Runner lifecycle, queue, history, bounded diagnostics
 │   ├── runnerManager.ts     # Three-session ownership, slots, routing, cleanup
 │   ├── runnerBrowserAccess.ts # Runner-scoped page/lifecycle boundary
 │   ├── history/             # SQLite store, migrations, validation, IPC/tests
@@ -366,8 +367,10 @@ The codebase—not previous conversations—is the source of truth.
 ## Electron Rules
 
 - Keep **`contextIsolation` enabled**.
+- Keep renderer **sandboxing and web security enabled**.
 - **Never enable `nodeIntegration`** in the renderer.
 - The renderer communicates only through a **typed preload bridge**.
+- Validate privileged IPC against the trusted renderer main frame and URL.
 - **Never expose raw Electron APIs** to the renderer; expose narrow, typed
   functions instead.
 - SQLite connections, SQL, migrations, and database paths are main-process

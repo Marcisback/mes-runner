@@ -5,7 +5,6 @@ import {
   isCurrentRunnerStream,
   lowestAvailableRunnerSlot,
   runnerIdForSlot,
-  shouldRouteRunnerCommand,
 } from '../runnerManagerCore.ts'
 import type { RunnerId } from '../../src/types/eolRunner.ts'
 
@@ -33,9 +32,7 @@ test('failed creation consumes no slot and closing reuses the lowest slot', () =
   assert.equal(lowestAvailableRunnerSlot(ids), 2)
 })
 
-test('runner IDs are validated and commands route only to their addressed runner', () => {
+test('runner IDs accept only the three managed slots', () => {
   assert.equal(isRunnerId('runner-1'), true)
   assert.equal(isRunnerId('runner-4'), false)
-  assert.equal(shouldRouteRunnerCommand('runner-2', 'runner-2'), true)
-  assert.equal(shouldRouteRunnerCommand('runner-2', 'runner-1'), false)
 })

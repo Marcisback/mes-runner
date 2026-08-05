@@ -12,15 +12,22 @@ import { ManagedChromeController } from './managedChromeController'
 import { RunnerManager } from './runnerManager'
 import { EolRunner } from './eolRunner'
 import { isRunnerId } from './runnerManagerCore'
+import {
+  isTrustedIpcSender,
+  type RendererSecurityPolicy,
+} from './ipcSecurity.ts'
 
 const controllers = new Map<number, ManagedChromeController>()
 const runnerManagers = new Map<number, RunnerManager>()
 let registered = false
+let securityPolicy: RendererSecurityPolicy | null = null
 
 export function registerManagedChromeWindow(
   hostWindow: BrowserWindow,
   historyStore: LocalHistoryStore,
+  policy: RendererSecurityPolicy,
 ): ManagedChromeController {
+  securityPolicy ??= policy
   const controller = new ManagedChromeController(hostWindow)
   const manager = new RunnerManager(
     hostWindow,
@@ -41,6 +48,15 @@ export function registerManagedChromeWindow(
 
   registerIpc()
   return controller
+}
+
+export async function disposeManagedChromeWindows(): Promise<void> {
+  await Promise.allSettled(
+    [...runnerManagers.values()].map((manager) => manager.dispose()),
+  )
+  await Promise.allSettled(
+    [...controllers.values()].map((controller) => controller.dispose()),
+  )
 }
 
 function registerIpc(): void {
@@ -74,9 +90,6 @@ function registerIpc(): void {
 
   ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.connectFramePort, (event) => {
     getController(event)?.connectFramePort()
-  })
-  ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.setViewport, (event, payload) => {
-    forwardInput(event, payload, (controller, _runnerId, value) => controller.setViewport(value))
   })
   ipcMain.on(MANAGED_CHROME_IPC_CHANNELS.mouseMove, (event, payload) => {
     forwardInput(event, payload, (controller, runnerId, value) => controller.mouseMove(runnerId, value))
@@ -165,13 +178,20 @@ function parseRunnerId(value: unknown): RunnerId | null {
 }
 
 function getController(event: IpcMainEvent | IpcMainInvokeEvent): ManagedChromeController | null {
-  const hostWindow = BrowserWindow.fromWebContents(event.sender)
+  const hostWindow = getTrustedHostWindow(event)
   return hostWindow === null ? null : controllers.get(hostWindow.id) ?? null
 }
 
 function getRunnerManager(event: IpcMainEvent | IpcMainInvokeEvent): RunnerManager | null {
-  const hostWindow = BrowserWindow.fromWebContents(event.sender)
+  const hostWindow = getTrustedHostWindow(event)
   return hostWindow === null ? null : runnerManagers.get(hostWindow.id) ?? null
+}
+
+function getTrustedHostWindow(
+  event: IpcMainEvent | IpcMainInvokeEvent,
+): BrowserWindow | null {
+  if (securityPolicy === null || !isTrustedIpcSender(event, securityPolicy)) return null
+  return BrowserWindow.fromWebContents(event.sender)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
